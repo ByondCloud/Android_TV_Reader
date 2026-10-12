@@ -1,6 +1,7 @@
 package com.example.myapplication.data.tts
 
 import android.content.Context
+import android.content.Intent
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import com.example.myapplication.domain.tts.SpeechSegment
@@ -84,36 +85,73 @@ class AndroidTtsReader(private val context: Context) {
      * @return 只返回"至少支持一种语言"的引擎。全都不可用就是空列表。
      */
     suspend fun probeEngines(): List<TtsEngine> {
-        // 第一步：先随便建一个实例，只为拿到"系统里有哪些引擎"
-        val probe = createTts(engineName = null) ?: return emptyList()
-        val infos = try {
-            probe.engines.orEmpty()
-        } catch (e: Exception) {
-            emptyList()
-        } finally {
-            probe.shutdown()
-        }
+        // ══ 第一步：用 PackageManager 找出【所有注册了 TTS_SERVICE 的包】══
+        //
+        // 【为什么不用 TextToSpeech.engines】
+        // 第一版我用的是 `TextToSpeech.engines`，理论上是"最正规"的查法。
+        // 但在小米电视上实测发现：adb 能查到 com.xiaomi.mibrain.speech，
+        // 而 `TextToSpeech.engines` 返回的是空 —— 于是界面显示"设备没有语音引擎"，
+        // 可设备明明有。
+        //
+        // 原因：`TextToSpeech.engines` 会做额外的【可用性判断】，
+        // 只返回它认为"当前可绑定"的引擎。而小米这个包装上之后
+        // 从没被系统正常绑定过（stopped 状态），就被它过滤掉了。
+        //
+        // 教训：**越高级的封装，过滤条件越多，越容易挡住你想要的信息。**
+        // 枚举系统里有什么，就该用 PackageManager 这种最底层的办法。
+        // ═══════════════════════════════════════════════════════════════
+        val candidates = queryRegisteredEnginePackages()
+        if (candidates.isEmpty()) return emptyList()
 
-        if (infos.isEmpty()) return emptyList()
+        // 第二步：逐个尝试【真正初始化】。能起来的才算可用 ——
+        // "注册了服务"和"服务真能用"是两回事，这一步是实测。
+        //
+        // 另外这一步还有个副作用：初始化会【绑定】引擎的服务，
+        // 顺带把新安装应用默认的 stopped 状态解除掉。
+        return candidates.mapNotNull { packageName ->
+            val instance = createTts(packageName) ?: return@mapNotNull null
 
-        // 第二步：逐个引擎单独建实例，问它支持哪些语言
-        return infos.mapNotNull { info ->
-            val instance = createTts(info.name) ?: return@mapNotNull null
             val languages = try {
                 listReadyLanguages(instance)
             } catch (e: Exception) {
                 emptyList()
             } finally {
-                instance.shutdown()
+                runCatching { instance.shutdown() }
             }
+
             if (languages.isEmpty()) return@mapNotNull null
+
             TtsEngine(
-                name = info.name,
-                label = runCatching { info.label }.getOrNull()?.takeIf { it.isNotBlank() }
-                    ?: info.name,
+                name = packageName,
+                label = engineLabel(packageName),
                 languages = languages,
             )
         }
+    }
+
+    /**
+     * 枚举所有注册了 `android.intent.action.TTS_SERVICE` 的包。
+     *
+     * 【前提】AndroidManifest 里必须有 `<queries>` 声明这一段意图，
+     * 否则 Android 11+ 会静默返回空列表（不报错、不崩溃，只是查不到）。
+     * 这是包可见性限制，很容易漏。
+     */
+    private fun queryRegisteredEnginePackages(): List<String> {
+        val intent = Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE)
+        val services = try {
+            context.packageManager.queryIntentServices(intent, 0)
+        } catch (e: Exception) {
+            emptyList()
+        }
+        return services.mapNotNull { it.serviceInfo?.packageName }.distinct()
+    }
+
+    /** 取引擎应用的显示名（比如"小米语音"），取不到就退回包名 */
+    private fun engineLabel(packageName: String): String = try {
+        val pm = context.packageManager
+        pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
+    } catch (e: Exception) {
+        packageName
     }
 
     /**
@@ -124,8 +162,19 @@ class AndroidTtsReader(private val context: Context) {
      * 复核一遍，把"支持"和"真的能用"分开标出来。
      */
     private fun listReadyLanguages(instance: TextToSpeech): List<TtsLanguage> {
-        val all = instance.availableLanguages.orEmpty()
-        return all.mapNotNull { locale ->
+        val reported = instance.availableLanguages.orEmpty()
+
+        // ══ 【关键容错：不能只信 availableLanguages】════════════════════
+        // 有些引擎（尤其是国内厂商定制的）不实现 availableLanguages，
+        // 直接返回一个空集合 —— 但它其实是能用的，isLanguageAvailable()
+        // 对中文会老老实实返回"支持"。
+        //
+        // 只信前者的话，会把一个完全可用的引擎误判成"不支持任何语言"，
+        // 然后被上面的过滤条件扔掉。所以补一份常见语言清单一起实测。
+        // ═══════════════════════════════════════════════════════════════
+        val candidates = (reported + FALLBACK_LOCALES).distinct()
+
+        return candidates.mapNotNull { locale ->
             val status = try {
                 instance.isLanguageAvailable(locale)
             } catch (e: Exception) {
@@ -310,5 +359,18 @@ class AndroidTtsReader(private val context: Context) {
          * 而探测时如果一个引擎卡住，用户也不希望整个探测流程被它拖死。
          */
         const val INIT_TIMEOUT_MS = 3000L
+
+        /**
+         * availableLanguages 返回空时，用来兜底探测的常见语言。
+         * 见 listReadyLanguages 里的说明。
+         */
+        val FALLBACK_LOCALES = listOf(
+            Locale.SIMPLIFIED_CHINESE,     // zh-CN
+            Locale.TRADITIONAL_CHINESE,    // zh-TW
+            Locale.US,                     // en-US
+            Locale.UK,                     // en-GB
+            Locale.JAPAN,                  // ja-JP
+            Locale.KOREA,                  // ko-KR
+        )
     }
 }
