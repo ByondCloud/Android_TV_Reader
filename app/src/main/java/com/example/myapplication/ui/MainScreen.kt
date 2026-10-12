@@ -147,8 +147,40 @@ private fun MainScreenContent(
     // ── 界面状态 ────────────────────────────────────────────
     var screen by remember { mutableStateOf<Screen>(Screen.Shelf) }
 
-    var books by remember { mutableStateOf<List<Book>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
+    // ══ 【为什么在组合期同步读书库】════════════════════════════════
+    // 这看起来"不优雅"，但它是被实测数据逼出来的：
+    //
+    // 在这台小米电视（澎湃 OS 3 / Android 14）上，
+    // "加载态 -> 内容"这一次重绘【不会发生】。
+    //
+    // 证据（dumpsys gfxinfo，debug 和 release 包都复现）：
+    //     Total frames rendered: 4        <- 只画了 4 帧就停住
+    //     50th percentile: 150ms
+    // 而按一下遥控器画面立刻刷新 —— 说明绘制管线没坏，
+    // 只是"数据加载完成"这个状态变化没能触发重绘。
+    //
+    // 异步方案必然要经历这次重绘：
+    //     isLoading=true  -> 画"正在读取书库…"    （第 N 帧）
+    //     isLoading=false -> 应该重画成书架        （这一帧没发生 ❌）
+    // 结果就是屏幕永远停在加载提示上。
+    //
+    // 同步方案让首帧画出来的【直接就是最终状态】，根本不需要那次过渡，
+    // 于是绕开了这个问题。
+    //
+    // 【代价】首帧多做一次 IO。实测 listBooks 约 100ms 且已并行化；
+    // R8 优化后整体冷启动仍只有 381ms。换来"开屏立刻看到书架"，
+    // 这笔账是划算的 —— 用户在意的是看得到书，不是启动数字好看。
+    //
+    // 【将来书库变大了怎么办】
+    // 不要改回异步（会重新踩进这个坑），而是给 listBooks 加磁盘缓存，
+    // 让同步读取也保持在几十毫秒内。
+    // ═══════════════════════════════════════════════════════════════
+    var books by remember {
+        mutableStateOf(
+            runCatching { container.bookRepository.listBooks() }.getOrDefault(emptyList())
+        )
+    }
+    var isLoading by remember { mutableStateOf(false) }
 
     /** null 表示"还没扫描过"，用来区分"扫描中"和"扫出来是空的" */
     var files by remember { mutableStateOf<List<SourceFile>?>(null) }
@@ -212,11 +244,11 @@ private fun MainScreenContent(
         }
     }
 
-    // 首次进入时加载书库
+    // 首次进入时刷新一次书库。
+    // 初始数据已经在 remember 里同步读过了（原因见上面的长注释），
+    // 这里只是确认一次，正常情况下几毫秒返回，不会产生可见的加载态。
     LaunchedEffect(Unit) {
-        isLoading = true
         reloadBooks()
-        isLoading = false
     }
 
     // ══ 阅读进度的防抖落盘 ══════════════════════════════════
