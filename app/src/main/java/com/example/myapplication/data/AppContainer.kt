@@ -5,6 +5,7 @@ import com.example.myapplication.data.parser.BookParsers
 import com.example.myapplication.data.repository.FileBookRepository
 import com.example.myapplication.data.settings.SettingsRepository
 import com.example.myapplication.data.source.LocalFolderSource
+import com.example.myapplication.data.tts.AndroidTtsReader
 import com.example.myapplication.domain.parser.BookParserRegistry
 import com.example.myapplication.domain.repository.BookRepository
 import com.example.myapplication.domain.source.BookSource
@@ -71,6 +72,22 @@ class AppContainer(context: Context) {
      * 用 SharedPreferences 持久化，理由见 SettingsRepository 的注释。
      */
     val settingsRepository: SettingsRepository = SettingsRepository(appContext)
+
+    // ══ 语音朗读 ════════════════════════════════════════════
+
+    /**
+     * Android 系统 TTS 朗读器。
+     *
+     * 【注意它和别的依赖不一样：不保证真的能用】
+     * 书库、解析器这些是"一定存在"的；而 TTS 引擎是【设备上装了才有】的 ——
+     * Android 系统本身不含任何引擎，它只是提供 API。
+     * 电视盒子尤其可能一个中文引擎都没有。
+     *
+     * 所以用之前必须先调 `probeEngines()` 探测：
+     * 返回空列表就是"这台设备不支持朗读"，界面要如实告诉用户，
+     * 而不是按了没反应。
+     */
+    val ttsReader: AndroidTtsReader = AndroidTtsReader(appContext)
 
     // ══ 用例层 ══════════════════════════════════════════════
 

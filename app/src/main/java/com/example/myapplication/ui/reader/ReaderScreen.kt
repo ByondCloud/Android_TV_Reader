@@ -51,12 +51,16 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.myapplication.data.tts.AndroidTtsReader
+import com.example.myapplication.data.tts.TtsEngine
+import com.example.myapplication.data.tts.TtsLanguage
 import com.example.myapplication.domain.model.Book
 import com.example.myapplication.domain.model.ParsedChapter
 import com.example.myapplication.domain.model.ReadingProgress
 import com.example.myapplication.domain.reader.Paginator
 import com.example.myapplication.domain.reader.ReaderSettings
 import com.example.myapplication.domain.reader.ReadingUnits
+import com.example.myapplication.domain.tts.TextSegmenter
 import com.example.myapplication.ui.components.tvFocusable
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -137,6 +141,16 @@ fun ReaderScreen(
     chapters: List<ParsedChapter>,
     initialProgress: ReadingProgress,
     settings: ReaderSettings,
+    /**
+     * 语音朗读器。
+     *
+     * 【为什么直接依赖这个具体类，而不抽一个接口】
+     * 因为它目前只有一个实现，而且只会有一个 —— 抽接口是"为不存在的
+     * 变化做准备"。等真的要做"云端 TTS"时再抽也不迟，
+     * 那时接口该长什么样也会更清楚。
+     * （对比一下：BookParser 之所以是接口，是因为 epub/pdf 是确定要加的。）
+     */
+    ttsReader: AndroidTtsReader,
     onProgressChange: (absoluteOffset: Int) -> Unit,
     onSettingsChange: (ReaderSettings) -> Unit,
     onBack: () -> Unit,
@@ -195,6 +209,21 @@ fun ReaderScreen(
     // 目录是否打开
     var tocVisible by remember { mutableStateOf(false) }
 
+    // ══ 语音朗读的状态 ══════════════════════════════════════
+    // 这些状态刻意留在 ReaderScreen 里，没有往上提升到 MainScreen：
+    // 朗读是"阅读"这件事的一部分，离开阅读页就该停；
+    // 而且引擎探测结果只对这次阅读有意义，提升上去反而要额外清理。
+    var ttsVisible by remember { mutableStateOf(false) }
+
+    /** null = 还没探测过（面板会显示"正在检测…"） */
+    var ttsEngines by remember { mutableStateOf<List<TtsEngine>?>(null) }
+    var selectedEngine by remember { mutableStateOf<TtsEngine?>(null) }
+    var selectedLanguage by remember { mutableStateOf<TtsLanguage?>(null) }
+    var isSpeaking by remember { mutableStateOf(false) }
+    var ttsError by remember { mutableStateOf<String?>(null) }
+
+    val ttsScope = rememberCoroutineScope()
+
     // 待处理的跳转请求。null = 没有
     var jumpRequest by remember { mutableStateOf<JumpRequest?>(null) }
 
@@ -203,6 +232,74 @@ fun ReaderScreen(
     val currentChapterIndex = chapters
         .indexOfLast { it.startOffset <= absoluteOffset }
         .coerceIn(0, max(0, chapters.size - 1))
+
+    // ══ 引擎探测：朗读面板一打开就查 ════════════════════════
+    // 【为什么要探测，不能直接假定有引擎】
+    // Android 系统本身不含 TTS 引擎，引擎是设备上另外装的。
+    // 电视盒子尤其可能一个中文引擎都没有 —— 那时候"朗读"按钮
+    // 按下去毫无反应，用户只会觉得 App 坏了。
+    // 先把结果查出来，界面才能如实告诉用户到底行不行。
+    LaunchedEffect(ttsVisible) {
+        if (!ttsVisible) return@LaunchedEffect
+        if (ttsEngines != null) return@LaunchedEffect     // 查过就不重复查
+
+        val found = ttsReader.probeEngines()
+        ttsEngines = found
+
+        // 自动选一套默认值，省掉用户两次按键：
+        // 引擎取第一个，语言优先中文（这毕竟是个中文阅读器）
+        val engine = found.firstOrNull()
+        selectedEngine = engine
+        selectedLanguage = engine?.languages
+            ?.firstOrNull { it.locale.language == "zh" }
+            ?: engine?.languages?.firstOrNull()
+    }
+
+    // 引擎读完最后一段会回调 onFinished，用它把状态收回来
+    DisposableEffect(Unit) {
+        ttsReader.onFinished = { isSpeaking = false }
+        onDispose {
+            // 【离开阅读页必须停】否则用户都回书架了，书还在念
+            ttsReader.stop()
+            ttsReader.onFinished = null
+            ttsReader.onSegmentStart = null
+        }
+    }
+
+    /**
+     * 从【当前阅读位置】开始朗读。
+     *
+     * 【为什么起点是 absoluteOffset】
+     * 那是用户此刻正在看的位置。朗读如果从全书开头念起，
+     * 读到一个中间位置的人会被直接拽回第一章 —— 完全没法用。
+     */
+    fun startSpeaking() {
+        val engine = selectedEngine ?: return
+        val language = selectedLanguage ?: return
+
+        ttsScope.launch {
+            val ready = ttsReader.prepare(engine.name, language.locale)
+            if (!ready) {
+                ttsError = "这个引擎不支持所选语言，换一个再试"
+                return@launch
+            }
+
+            val segments = TextSegmenter.split(text, absoluteOffset)
+            if (segments.isEmpty()) {
+                ttsError = "当前位置往后没有可朗读的内容"
+                return@launch
+            }
+
+            ttsError = null
+            ttsReader.speak(segments)
+            isSpeaking = true
+        }
+    }
+
+    fun stopSpeaking() {
+        ttsReader.stop()
+        isSpeaking = false
+    }
 
     /** 切到相邻单元。往前翻时停在末尾，所以传入一个极大的偏移。 */
     fun goToUnit(index: Int, toEnd: Boolean) {
@@ -286,10 +383,14 @@ fun ReaderScreen(
             ReaderSettingsPanel(
                 settings = settings,
                 chapterCount = chapters.size,
-                currentChapterIndex = currentChapterIndex,
+                isSpeaking = isSpeaking,
                 onOpenToc = {
                     settingsVisible = false
                     tocVisible = true
+                },
+                onOpenTts = {
+                    settingsVisible = false
+                    ttsVisible = true
                 },
                 onFontSpacing = {
                     // 【为什么先关菜单再开弹窗】
@@ -304,6 +405,32 @@ fun ReaderScreen(
                     )
                 },
                 onDismiss = { settingsVisible = false },
+            )
+        }
+
+        // ── 语音朗读面板 ───────────────────────────────────
+        if (ttsVisible) {
+            TtsPanel(
+                engines = ttsEngines,
+                selectedEngine = selectedEngine,
+                selectedLanguage = selectedLanguage,
+                isSpeaking = isSpeaking,
+                errorMessage = ttsError,
+                onSelectEngine = { engine ->
+                    selectedEngine = engine
+                    // 换引擎时语言也要跟着换 —— 旧语言在新引擎上未必支持
+                    selectedLanguage = engine.languages
+                        .firstOrNull { it.locale.language == "zh" }
+                        ?: engine.languages.firstOrNull()
+                    ttsError = null
+                },
+                onSelectLanguage = { language ->
+                    selectedLanguage = language
+                    ttsError = null
+                },
+                onStart = { startSpeaking() },
+                onStop = { stopSpeaking() },
+                onDismiss = { ttsVisible = false },
             )
         }
 
@@ -388,8 +515,9 @@ fun ReaderScreen(
 private fun ReaderSettingsPanel(
     settings: ReaderSettings,
     chapterCount: Int,
-    currentChapterIndex: Int,
+    isSpeaking: Boolean,
     onOpenToc: () -> Unit,
+    onOpenTts: () -> Unit,
     onFontSpacing: () -> Unit,
     onToggleChapterSplit: () -> Unit,
     onDismiss: () -> Unit,
@@ -458,7 +586,18 @@ private fun ReaderSettingsPanel(
 
             Spacer(Modifier.height(10.dp))
 
-            // ② 字号间距 —— 点进去打开底部弹窗实时调
+            // ② 语音朗读
+            SettingRow(
+                label = "语音朗读",
+                description = "让设备念出正文，从你当前读到的位置开始",
+                value = if (isSpeaking) "朗读中…" else "打开",
+                onClick = onOpenTts,
+                highlightValue = isSpeaking,
+            )
+
+            Spacer(Modifier.height(10.dp))
+
+            // ③ 字号间距 —— 点进去打开底部弹窗实时调
             SettingRow(
                 label = "字号间距",
                 description = "调整正文字号和行间松紧",
@@ -468,7 +607,7 @@ private fun ReaderSettingsPanel(
 
             Spacer(Modifier.height(10.dp))
 
-            // ③ 按章节分页
+            // ④ 按章节分页
             SettingRow(
                 label = "按章节分页",
                 description = if (settings.chapterSplitEnabled) {
