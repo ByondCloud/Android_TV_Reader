@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -55,11 +56,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.myapplication.domain.model.Book
+import com.example.myapplication.domain.reader.ReaderTheme
 import com.example.myapplication.ui.components.TvButton
 import com.example.myapplication.ui.components.TvCard
 import com.example.myapplication.ui.components.tvFocusable
-import com.example.myapplication.ui.theme.ReaderFocus
-import com.example.myapplication.ui.theme.ReaderSurface
 
 /** 危险操作（删除）用的红色。只在书架页用，所以不放进全局配色表 */
 private val DangerRed = Color(0xFFE06A6A)
@@ -98,6 +98,8 @@ fun BookShelfScreen(
     onRenameBook: (Book, String) -> Unit,
     onDeleteBook: (Book) -> Unit,
     onDeleteBooks: (List<String>) -> Unit,
+    theme: ReaderTheme,
+    onToggleTheme: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     /** 当前有焦点的书。设置键要对它生效 */
@@ -189,7 +191,9 @@ fun BookShelfScreen(
                 enabled = !panelOpen,
                 batchMode = batchMode,
                 selectedCount = selectedIds.size,
+                theme = theme,
                 onImportClick = onImportClick,
+                onToggleTheme = onToggleTheme,
                 onBatchClick = {
                     if (batchMode) {
                         // 已经是批量模式 → 这个按钮就是"执行删除"
@@ -300,8 +304,10 @@ private fun ShelfHeader(
     enabled: Boolean,
     batchMode: Boolean,
     selectedCount: Int,
+    theme: ReaderTheme,
     onImportClick: () -> Unit,
     onBatchClick: () -> Unit,
+    onToggleTheme: () -> Unit,
     importRequester: FocusRequester,
     batchRequester: FocusRequester,
 ) {
@@ -360,6 +366,58 @@ private fun ShelfHeader(
             onClick = onImportClick,
             enabled = enabled,
             modifier = Modifier.focusRequester(importRequester),
+        )
+
+        Spacer(Modifier.width(12.dp))
+
+        // 主题切换：右上角的圆形按钮，显示太阳 / 月亮
+        ThemeToggleButton(
+            theme = theme,
+            enabled = enabled,
+            onClick = onToggleTheme,
+        )
+    }
+}
+
+/**
+ * 昼夜主题切换按钮。
+ *
+ * ══ 【为什么用圆形】═══════════════════════════════════════════════
+ * 它和旁边两个圆角矩形按钮在形状上明显不同，用户一眼就能分辨
+ * "这个和那两个不是一类东西" —— 它不是导航，是个开关。
+ *
+ * ══ 【为什么显示"当前主题"而不是"点击后会变成什么"】═══════════
+ * 这是开关类控件最容易搞反的地方。通行做法是显示【当前状态】：
+ * 现在是夜晚，就显示月亮。用户看到月亮，知道"哦，现在晚上"，
+ * 按一下切到白天，图标变成太阳。
+ *
+ * 反过来（显示"点了会变成什么"）会让用户每次都要想一下
+ * "现在到底是日还是夜"，反而更糊涂。
+ * ═══════════════════════════════════════════════════════════════
+ */
+@Composable
+private fun ThemeToggleButton(
+    theme: ReaderTheme,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .size(48.dp)
+            .tvFocusable(
+                onClick = onClick,
+                enabled = enabled,
+                shape = CircleShape,
+                focusedScale = 1.12f,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = theme.icon,
+            // 符号本身画得比文字小，放大一档才和旁边按钮的文字视觉等重
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.onSurface,
         )
     }
 }
@@ -489,7 +547,7 @@ private fun BookCard(
                     "未读"
                 },
                 style = MaterialTheme.typography.labelMedium,
-                color = if (book.progress.isStarted) ReaderFocus else MaterialTheme.colorScheme.secondary,
+                color = if (book.progress.isStarted) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.secondary,
             )
         }
 
@@ -521,12 +579,12 @@ private fun SelectionMark(selected: Boolean, modifier: Modifier = Modifier) {
         modifier = modifier
             .size(30.dp)
             .background(
-                color = if (selected) ReaderFocus else Color(0x66000000),
+                color = if (selected) MaterialTheme.colorScheme.tertiary else Color(0x66000000),
                 shape = shape,
             )
             .border(
                 width = 2.dp,
-                color = if (selected) ReaderFocus else Color(0xAAFFFFFF),
+                color = if (selected) MaterialTheme.colorScheme.tertiary else Color(0xAAFFFFFF),
                 shape = shape,
             ),
         contentAlignment = Alignment.Center,
@@ -560,7 +618,7 @@ private fun BatchHint(selectedCount: Int, modifier: Modifier = Modifier) {
             "确定键勾选要删除的书 · 长按上键跳到「批量删除」按钮 · 返回键退出"
         },
         style = MaterialTheme.typography.titleSmall,
-        color = if (selectedCount > 0) ReaderFocus else MaterialTheme.colorScheme.secondary,
+        color = if (selectedCount > 0) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.secondary,
         modifier = modifier.padding(8.dp),
     )
 }
@@ -619,8 +677,8 @@ private fun ModalPanel(
         Column(
             modifier = Modifier
                 .width(width)
-                .background(ReaderSurface, RoundedCornerShape(14.dp))
-                .border(1.dp, ReaderFocus, RoundedCornerShape(14.dp))
+                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
+                .border(1.dp, MaterialTheme.colorScheme.tertiary, RoundedCornerShape(14.dp))
                 // ══ 【必须加垂直滚动】════════════════════════════════════
                 // 电视上的软键盘会占掉半屏，配合上面的 imePadding，
                 // 面板的可用高度会骤减。如果内容不能滚动，

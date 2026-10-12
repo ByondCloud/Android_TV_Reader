@@ -28,6 +28,48 @@ enum class ReaderMode {
 }
 
 /**
+ * 阅读主题：白天 / 夜晚。
+ *
+ * 【为什么要区分"主题"和"配色"】
+ * 这个枚举只表达【用户的意图】（我想要亮一点 / 暗一点），
+ * 至于"白天到底用哪个色号"是界面层的事（见 ui/theme/Color.kt）。
+ *
+ * 这样分的好处很实际：以后想加第三套主题（比如"护眼绿"），
+ * 只需要在这里加一个常量、在配色表里加一组颜色，
+ * 所有页面的代码一行都不用动 —— 它们只知道"要取当前主题的颜色"。
+ */
+enum class ReaderTheme {
+    /** 白天 */
+    Day,
+
+    /** 夜晚（默认） */
+    Night;
+
+    fun toggled(): ReaderTheme = if (this == Day) Night else Day
+
+    /**
+     * 主题按钮上显示的符号。
+     *
+     * 【为什么用文字符号而不是矢量图标】
+     * Material 的基础图标集里【没有】太阳/月亮（那两个在
+     * material-icons-extended 里，那个包有 10MB 左右，为两个图标不值得）。
+     * 用 Unicode 符号零依赖、任何设备都能渲染，而且和项目里
+     * 勾选框用的 "✓" 是同一种做法。
+     */
+    val icon: String
+        get() = when (this) {
+            Day -> "☀"
+            Night -> "☾"
+        }
+
+    val displayName: String
+        get() = when (this) {
+            Day -> "白天"
+            Night -> "夜晚"
+        }
+}
+
+/**
  * 阅读设置。
  *
  * ══ 为什么用 data class 而不是一堆散落的常量 ══════════════════════
@@ -40,16 +82,30 @@ enum class ReaderMode {
  * Android TV 的逻辑画布固定 960×540 dp，用户坐在三米外。
  * 手机上 16sp 的正文，在电视上根本看不清。
  *
- *   fontSizeSp = 28sp —— 大约能在 960dp 宽度里放下 26 个汉字
- *   lineHeightSp = 44sp —— 行距约为字号的 1.57 倍。
- *                          中文阅读里 1.5~1.8 倍最舒服。
+ *   fontSizeSp = 28sp  —— 大约能在 960dp 宽度里放下 26 个汉字
+ *   行距档位 = 3      —— 对应 1.6 倍行高。中文阅读里 1.5~1.8 倍最舒服。
+ *
+ * ══ 【行距为什么用"档位"而不是直接存行高】════════════════════════
+ * 行高是"字号 × 倍数"算出来的，不单独存。理由：
+ *
+ * 1. 符合用户的心智。用户想的是"行距松一点"，不是"行高改成 48sp"。
+ * 2. 避免自相矛盾的设置。如果字号和行高各存各的，就可能出现
+ *    "字号 48 + 行高 20"这种行与行重叠的非法组合。
+ *    用倍数就天然不可能出错 —— 字号变大，行高自动跟着变大。
+ * 3. 界面更好做。5 个档位就是 5 个可选项，不需要输数字。
+ * ═══════════════════════════════════════════════════════════════
  */
 data class ReaderSettings(
-    /** 正文字号 */
+    /** 正文字号（sp） */
     val fontSizeSp: Float = 28f,
 
-    /** 行高。必须 >= 字号，否则行会重叠 */
-    val lineHeightSp: Float = 44f,
+    /**
+     * 行距档位，1~5。
+     *   1 → 1.2 倍（紧凑）   2 → 1.4 倍
+     *   3 → 1.6 倍（默认）   4 → 1.8 倍
+     *   5 → 2.0 倍（宽松）
+     */
+    val lineSpacingLevel: Int = 3,
 
     /** 阅读模式 */
     val mode: ReaderMode = ReaderMode.Paged,
@@ -79,4 +135,36 @@ data class ReaderSettings(
      * 想要连续阅读体验的用户可以自己在设置里关掉。
      */
     val chapterSplitEnabled: Boolean = true,
-)
+
+    /** 白天 / 夜晚主题 */
+    val theme: ReaderTheme = ReaderTheme.Night,
+) {
+    /**
+     * 行距倍数。档位 → 倍数：1.0 + 档位 × 0.2
+     * coerceIn 是防御性的：万一磁盘上存了个 99，也不至于排出一屏一行。
+     */
+    val lineHeightMultiplier: Float
+        get() = 1.0f + lineSpacingLevel.coerceIn(MIN_LINE_SPACING, MAX_LINE_SPACING) * 0.2f
+
+    /**
+     * 实际行高（sp）。
+     *
+     * 【这是一个计算属性，不是字段 —— 这点很重要】
+     * 它保证"行高永远等于字号 × 倍数"，不可能出现两者不一致的状态。
+     * 界面上所有用到行高的地方（排版测量、滚动步长）都读它，
+     * 于是"改字号"这一个动作会自动带动行高、页码、滚动步长一起更新。
+     */
+    val lineHeightSp: Float
+        get() = fontSizeSp * lineHeightMultiplier
+
+    companion object {
+        /** 字号范围。上限 48sp 是因为再大一行放不下 10 个字了 */
+        const val MIN_FONT_SIZE_SP = 16f
+        const val MAX_FONT_SIZE_SP = 48f
+        const val FONT_SIZE_STEP = 2f
+
+        /** 行距档位范围 */
+        const val MIN_LINE_SPACING = 1
+        const val MAX_LINE_SPACING = 5
+    }
+}

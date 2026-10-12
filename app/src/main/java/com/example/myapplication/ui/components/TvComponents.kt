@@ -26,18 +26,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.example.myapplication.ui.theme.ReaderFocus
-import com.example.myapplication.ui.theme.ReaderSurface
 
-// ── 焦点视觉的两个颜色 ──────────────────────────────────────────
-// 故意放在文件顶层而不是 Color.kt，因为它们【只服务于焦点状态】，
-// 是"焦点系统"这个概念的内部细节，不该污染全局配色表。
-
-/** 获得焦点时的底色：比常态亮一档 */
-private val FocusedBackground = Color(0xFF273046)
-
-/** 未获得焦点时的边框：几乎看不见，只用来让卡片有轮廓 */
-private val UnfocusedBorder = Color(0x22FFFFFF)
+// ── 焦点视觉的取色方式 ──────────────────────────────────────────
+// 【为什么这些颜色不写死在这里，而是从 MaterialTheme 取】
+// 因为项目有白天/夜晚两套主题，而且焦点颜色在两套主题里
+// 方向是相反的：
+//   · 焦点边框：深色底用明黄，浅色底必须换暗橙（明黄放在米白上等于没有）
+//   · 焦点底色：深色主题里要比 surface 更【亮】，
+//               浅色主题里要比 surface 更【暗】
+// 直接从 colorScheme 的角色里取，切主题时这里一行都不用改。
+//
+// 具体色值和角色映射见 ui/theme/Theme.kt。
 
 /**
  * ★★★ TV 开发最核心的一个修饰符 ★★★
@@ -92,10 +91,20 @@ fun Modifier.tvFocusable(
     return this
         .scale(if (isFocused) focusedScale else 1f)
         .clip(shape)
-        .background(if (isFocused) FocusedBackground else ReaderSurface)
+        .background(
+            if (isFocused) {
+                MaterialTheme.colorScheme.surfaceVariant
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
+        )
         .border(
             width = if (isFocused) focusedBorderWidth else 1.dp,
-            color = if (isFocused) ReaderFocus else UnfocusedBorder,
+            color = if (isFocused) {
+                MaterialTheme.colorScheme.tertiary
+            } else {
+                MaterialTheme.colorScheme.outlineVariant
+            },
             shape = shape,
         )
         .onFocusChanged { isFocused = it.isFocused }

@@ -41,7 +41,6 @@ import com.example.myapplication.domain.source.SourceFile
 import com.example.myapplication.domain.usecase.ImportResult
 import com.example.myapplication.ui.components.TvButton
 import com.example.myapplication.ui.components.tvFocusable
-import com.example.myapplication.ui.theme.ReaderFocus
 
 /**
  * 导入页。
@@ -175,7 +174,7 @@ fun ImportScreen(
         Text(
             text = dropDirPath,
             style = MaterialTheme.typography.bodySmall,
-            color = ReaderFocus,
+            color = MaterialTheme.colorScheme.tertiary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -315,7 +314,7 @@ private fun ImportResultBanner(results: List<ImportResult>) {
                 }
             },
             style = MaterialTheme.typography.titleSmall,
-            color = if (failures.isEmpty()) ReaderFocus else MaterialTheme.colorScheme.onSurface,
+            color = if (failures.isEmpty()) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface,
         )
 
         // 「已在书架」用普通颜色而不是红色 —— 它不是错误，别吓用户
@@ -440,7 +439,7 @@ private fun FileRow(
             Text(
                 text = "已在书架",
                 style = MaterialTheme.typography.labelMedium,
-                color = ReaderFocus,
+                color = MaterialTheme.colorScheme.tertiary,
             )
             Spacer(Modifier.width(16.dp))
         }
@@ -470,7 +469,7 @@ private fun SelectMark(selected: Boolean, disabled: Boolean) {
             .background(
                 color = when {
                     disabled -> Color(0x22000000)
-                    selected -> ReaderFocus
+                    selected -> MaterialTheme.colorScheme.tertiary
                     else -> Color(0x66000000)
                 },
                 shape = shape,
@@ -479,7 +478,7 @@ private fun SelectMark(selected: Boolean, disabled: Boolean) {
                 width = 2.dp,
                 color = when {
                     disabled -> Color(0x33FFFFFF)
-                    selected -> ReaderFocus
+                    selected -> MaterialTheme.colorScheme.tertiary
                     else -> Color(0xAAFFFFFF)
                 },
                 shape = shape,

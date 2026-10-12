@@ -3,6 +3,8 @@ package com.example.myapplication.ui.reader
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 // 【注意】scrollBy 是 ScrollableState 的【扩展函数】，不是成员方法，
 // 所以必须显式 import，否则会报 Unresolved reference。
 // 这是 Compose 里很常见的坑：方法看起来"应该"在对象上，其实是扩展。
@@ -63,8 +65,6 @@ import com.example.myapplication.domain.reader.ReaderSettings
 import com.example.myapplication.domain.reader.ReadingUnit
 import com.example.myapplication.domain.reader.ReadingUnits
 import com.example.myapplication.ui.components.tvFocusable
-import com.example.myapplication.ui.theme.ReaderFocus
-import com.example.myapplication.ui.theme.ReaderSurface
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -181,6 +181,9 @@ fun ReaderScreen(
     // 设置面板是否打开
     var settingsVisible by remember { mutableStateOf(false) }
 
+    // 字号/间距弹窗是否打开
+    var fontSpacingVisible by remember { mutableStateOf(false) }
+
     /** 切到相邻单元。往前翻时停在末尾，所以传入一个极大的偏移。 */
     fun goToUnit(index: Int, toEnd: Boolean) {
         val target = index.coerceIn(0, units.lastIndex)
@@ -224,9 +227,9 @@ fun ReaderScreen(
                     .fillMaxWidth()
                     .padding(horizontal = settings.contentPaddingDp.dp)
             ) {
-                // 设置面板打开时禁用阅读区的焦点 ——
+                // 设置面板或字号弹窗打开时禁用阅读区的焦点 ——
                 // 否则方向键会把焦点从面板挪回正文，用户就没法操作设置了。
-                val inputEnabled = !settingsVisible
+                val inputEnabled = !settingsVisible && !fontSpacingVisible
 
                 when (settings.mode) {
                     ReaderMode.Paged -> PagedReader(
@@ -238,9 +241,6 @@ fun ReaderScreen(
                         onPrevUnit = { goToUnit(unitIndex - 1, toEnd = true) },
                         onNextUnit = { goToUnit(unitIndex + 1, toEnd = false) },
                         onPageInfoChange = { current, total -> pageInfo = "第 $current / $total 页" },
-                        onToggleMode = {
-                            onSettingsChange(settings.copy(mode = settings.mode.toggled()))
-                        },
                         onOpenSettings = { settingsVisible = true },
                         onBack = onBack,
                         modifier = Modifier.fillMaxSize(),
@@ -254,9 +254,6 @@ fun ReaderScreen(
                         onOffsetChange = { absoluteOffset = unit.startOffset + it },
                         onPrevUnit = { goToUnit(unitIndex - 1, toEnd = true) },
                         onNextUnit = { goToUnit(unitIndex + 1, toEnd = false) },
-                        onToggleMode = {
-                            onSettingsChange(settings.copy(mode = settings.mode.toggled()))
-                        },
                         onOpenSettings = { settingsVisible = true },
                         onBack = onBack,
                         modifier = Modifier.fillMaxSize(),
@@ -279,12 +276,48 @@ fun ReaderScreen(
         if (settingsVisible) {
             ReaderSettingsPanel(
                 settings = settings,
+                onFontSpacing = {
+                    // 【为什么先关菜单再开弹窗】
+                    // 两个浮层叠在一起会让用户搞不清"现在按返回键会关掉哪个"。
+                    // 一次只显示一层，层级关系永远清晰。
+                    settingsVisible = false
+                    fontSpacingVisible = true
+                },
+                onToggleMode = {
+                    onSettingsChange(settings.copy(mode = settings.mode.toggled()))
+                },
                 onToggleChapterSplit = {
                     onSettingsChange(
                         settings.copy(chapterSplitEnabled = !settings.chapterSplitEnabled)
                     )
                 },
                 onDismiss = { settingsVisible = false },
+            )
+        }
+
+        // ── 字号 / 间距弹窗（底部浮层）──────────────────────
+        // 【为什么这个弹窗【不加】半透明遮罩】
+        // 用户调字号/间距时最想看的就是"正文变成了什么样"。
+        // 盖一层黑上去，等于让他盲调 —— 调完关掉才发现不合适，再打开调。
+        // 所以这里只画一个小浮层，正文完全可见、实时跟着变。
+        if (fontSpacingVisible) {
+            FontSpacingPanel(
+                settings = settings,
+                onFontSizeDelta = { delta ->
+                    val next = (settings.fontSizeSp + delta).coerceIn(
+                        ReaderSettings.MIN_FONT_SIZE_SP,
+                        ReaderSettings.MAX_FONT_SIZE_SP,
+                    )
+                    onSettingsChange(settings.copy(fontSizeSp = next))
+                },
+                onLineSpacingDelta = { delta ->
+                    val next = (settings.lineSpacingLevel + delta).coerceIn(
+                        ReaderSettings.MIN_LINE_SPACING,
+                        ReaderSettings.MAX_LINE_SPACING,
+                    )
+                    onSettingsChange(settings.copy(lineSpacingLevel = next))
+                },
+                onDismiss = { fontSpacingVisible = false },
             )
         }
     }
@@ -310,6 +343,8 @@ fun ReaderScreen(
 @Composable
 private fun ReaderSettingsPanel(
     settings: ReaderSettings,
+    onFontSpacing: () -> Unit,
+    onToggleMode: () -> Unit,
     onToggleChapterSplit: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -326,7 +361,7 @@ private fun ReaderSettingsPanel(
             // 半透明遮罩：让用户一眼看出"现在是设置状态"
             .background(Color(0xDD000000))
             // 返回键关闭面板。这个 onKeyEvent 在外层，
-            // 内层的开关行不处理返回键，事件会冒泡上来。
+            // 内层的设置行不处理返回键，事件会冒泡上来。
             .onKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown &&
                     (event.key == Key.Back || event.key == Key.Settings || event.key == Key.Menu)
@@ -342,8 +377,11 @@ private fun ReaderSettingsPanel(
         Column(
             modifier = Modifier
                 .width(620.dp)
-                .background(ReaderSurface, RoundedCornerShape(14.dp))
-                .border(1.dp, ReaderFocus, RoundedCornerShape(14.dp))
+                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
+                .border(1.dp, MaterialTheme.colorScheme.tertiary, RoundedCornerShape(14.dp))
+                // 电视上的软键盘、以及以后设置项变多时，都可能让内容超高，
+                // 加滚动能保证任何情况下都够得着所有选项
+                .verticalScroll(rememberScrollState())
                 .padding(24.dp),
         ) {
             Text(
@@ -354,16 +392,46 @@ private fun ReaderSettingsPanel(
 
             Spacer(Modifier.height(20.dp))
 
-            SettingSwitchRow(
+            // ① 字号间距 —— 点进去打开底部弹窗实时调
+            SettingRow(
+                label = "字号间距",
+                description = "调整正文字号和行间松紧",
+                value = "字号 ${settings.fontSizeSp.toInt()} · 间距 ${settings.lineSpacingLevel}",
+                onClick = onFontSpacing,
+                modifier = Modifier.focusRequester(focusRequester),
+            )
+
+            Spacer(Modifier.height(10.dp))
+
+            // ② 阅读模式
+            // 【这一项是从"确定键"挪过来的】
+            // 确定键原来直接切换模式，但用户完全猜不到。
+            // 放到这里之后，至少它能被"看见"——
+            // 用户翻设置的时候会发现"哦，原来还能切成滚动"。
+            SettingRow(
+                label = "阅读模式",
+                description = if (settings.mode == ReaderMode.Paged) {
+                    "翻页：一次一屏，左右翻页。按确定键切换。"
+                } else {
+                    "滚动：上下连续阅读，一滑到底。按确定键切换。"
+                },
+                value = settings.mode.displayName,
+                onClick = onToggleMode,
+            )
+
+            Spacer(Modifier.height(10.dp))
+
+            // ③ 按章节分页
+            SettingRow(
                 label = "按章节分页",
                 description = if (settings.chapterSplitEnabled) {
                     "每章独立排版，章与章之间会断开。能显示章节名。"
                 } else {
                     "全文连续排版，忽略章节边界。断开的地方少得多。"
                 },
-                checked = settings.chapterSplitEnabled,
+                value = if (settings.chapterSplitEnabled) "✓ 开" else "✗ 关",
+                highlightValue = settings.chapterSplitEnabled,
                 onClick = onToggleChapterSplit,
-                modifier = Modifier.focusRequester(focusRequester),
             )
 
             Spacer(Modifier.height(20.dp))
@@ -378,19 +446,24 @@ private fun ReaderSettingsPanel(
 }
 
 /**
- * 一行"开关"设置项。
+ * 设置面板里的一行。
  *
- * 用文字「✓ 开 / ✗ 关」而不是真的做一个 Switch 组件，原因：
- * TV 上的 Switch 是给手指拨的，用遥控器操作时"确定键切换"更自然，
- * 而且文字状态在三米外也看得清。
+ * 【为什么用文字值（"✓ 开" / "翻页"）而不是真的做 Switch、下拉框】
+ * TV 上的 Switch 是给手指拨的，用遥控器操作时"确定键直接切换"更自然，
+ * 而且文字状态在三米外也看得清 —— 一个开关图形在电视上根本看不出开还是关。
+ *
+ * 【为什么 value 和 description 分开】
+ * value 是"现在是什么"（一眼要看到），description 是"这是什么意思"
+ * （需要时才细看）。字号和颜色都不同，信息层级才清楚。
  */
 @Composable
-private fun SettingSwitchRow(
+private fun SettingRow(
     label: String,
     description: String,
-    checked: Boolean,
+    value: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    highlightValue: Boolean = true,
 ) {
     Row(
         modifier = modifier
@@ -416,10 +489,103 @@ private fun SettingSwitchRow(
         Spacer(Modifier.width(16.dp))
 
         Text(
-            text = if (checked) "✓ 开" else "✗ 关",
+            text = value,
             style = MaterialTheme.typography.titleMedium,
-            color = if (checked) ReaderFocus else MaterialTheme.colorScheme.secondary,
+            color = if (highlightValue) {
+                MaterialTheme.colorScheme.tertiary
+            } else {
+                MaterialTheme.colorScheme.secondary
+            },
         )
+    }
+}
+
+/**
+ * 字号 / 间距 弹窗。
+ *
+ * ══ 为什么是这个形状 ═══════════════════════════════════════════
+ * 用户的原话是"弹窗只需要2个信息"，所以这里【只有一行】：
+ *
+ *     字号 : 20  |  间距 : 3
+ *
+ * 不放减号加号按钮、不放滑杆、不放预览文字 —— 那些都是"看起来更完整"
+ * 但实际让用户多按好几次方向键才能到达真正想按的地方。
+ * 按键直接映射成操作，比"移动焦点到按钮再按确定"快一倍。
+ *
+ * ══ 按键映射 ═══════════════════════════════════════════════════
+ *   左 / 右 → 字号 −2 / +2
+ *   上 / 下 → 间距档位 +1 / −1（向上更松，符合"往上 = 更多空间"的直觉）
+ *   确定 / 返回 / 设置 → 关闭
+ *
+ * 【间距为什么是 1~5 档而不是连续值】
+ * 见 ReaderSettings 里 lineSpacingLevel 的注释 ——
+ * 简单说就是"松一点"这种感受本来就没有 0.1 的精度，
+ * 5 档既够用又不用输数字。
+ * ═══════════════════════════════════════════════════════════════
+ */
+@Composable
+private fun FontSpacingPanel(
+    settings: ReaderSettings,
+    onFontSizeDelta: (Float) -> Unit,
+    onLineSpacingDelta: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        runCatching { focusRequester.requestFocus() }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            // 【注意：这里没有半透明遮罩】
+            // 用户调字号时最想看的就是"正文现在长什么样"。
+            // 盖一层黑上去等于让他盲调，所以只画下面这个小浮层，
+            // 正文完全可见、并且实时跟着设置变。
+            .onKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                when (event.key) {
+                    Key.DirectionLeft -> { onFontSizeDelta(-ReaderSettings.FONT_SIZE_STEP); true }
+                    Key.DirectionRight -> { onFontSizeDelta(+ReaderSettings.FONT_SIZE_STEP); true }
+                    // 向上 = 行距更松（更多空间），向下 = 更紧凑
+                    Key.DirectionUp -> { onLineSpacingDelta(+1); true }
+                    Key.DirectionDown -> { onLineSpacingDelta(-1); true }
+
+                    Key.DirectionCenter, Key.Enter, Key.Back,
+                    Key.Settings, Key.Menu,
+                    -> { onDismiss(); true }
+
+                    else -> false
+                }
+            },
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(bottom = 8.dp)
+                .focusRequester(focusRequester)
+                .focusable()
+                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
+                .border(2.dp, MaterialTheme.colorScheme.tertiary, RoundedCornerShape(16.dp))
+                .padding(horizontal = 44.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // 就是这一行 —— 弹窗的全部内容
+            Text(
+                text = "字号 : ${settings.fontSizeSp.toInt()}  |  间距 : ${settings.lineSpacingLevel}",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+
+            Spacer(Modifier.height(10.dp))
+
+            Text(
+                text = "左右调字号 · 上下调间距 · 确定键关闭",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        }
     }
 }
 
@@ -456,7 +622,6 @@ private fun PagedReader(
     onPrevUnit: () -> Unit,
     onNextUnit: () -> Unit,
     onPageInfoChange: (current: Int, total: Int) -> Unit,
-    onToggleMode: () -> Unit,
     onOpenSettings: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -621,10 +786,24 @@ private fun PagedReader(
 
         if (event.type != KeyEventType.KeyDown) return false
 
-        // 和"切换模式"一样，这几个键在任何时候都要能用
+        // 和"打开设置"一样，这两个键任何时候都要能用
         when (event.key) {
-            Key.DirectionCenter, Key.Enter -> { onToggleMode(); return true }
-            Key.Settings, Key.Menu -> { onOpenSettings(); return true }
+            // ══ 【确定键和设置键现在都打开设置面板】══════════════════
+            // 确定键原先绑的是"切换翻页/滚动模式"，但实测下来
+            // 用户根本猜不到它在干什么 —— 屏幕上没有任何提示能让人
+            // 联想到"按确定键会换阅读模式"。
+            //
+            // 一个用户猜不到的按键，等于没有这个功能，反而添乱。
+            // 所以先把它和设置键统一到菜单上（菜单是有视觉反馈的，
+            // 按一下就知道发生了什么），等想清楚它该做什么再单独绑。
+            //
+            // 原来的"切换模式"没有丢 —— 移到了设置菜单里，
+            // 见 ReaderSettingsPanel 的「阅读模式」那一项。
+            // ═══════════════════════════════════════════════════════
+            Key.DirectionCenter, Key.Enter, Key.Settings, Key.Menu -> {
+                onOpenSettings()
+                return true
+            }
             Key.Back -> { onBack(); return true }
         }
 
@@ -727,7 +906,6 @@ private fun ScrollReader(
     onOffsetChange: (Int) -> Unit,
     onPrevUnit: () -> Unit,
     onNextUnit: () -> Unit,
-    onToggleMode: () -> Unit,
     onOpenSettings: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -829,9 +1007,13 @@ private fun ScrollReader(
 
         if (event.type != KeyEventType.KeyDown) return false
 
+        // 和"打开设置"一样，这两个键任何时候都要能用
         when (event.key) {
-            Key.DirectionCenter, Key.Enter -> { onToggleMode(); return true }
-            Key.Settings, Key.Menu -> { onOpenSettings(); return true }
+            // 确定键和设置键都打开设置面板（理由见 PagedReader 里的注释）
+            Key.DirectionCenter, Key.Enter, Key.Settings, Key.Menu -> {
+                onOpenSettings()
+                return true
+            }
             Key.Back -> { onBack(); return true }
         }
 
@@ -944,7 +1126,7 @@ private fun ReaderTopBar(
         )
         Spacer(Modifier.width(12.dp))
         Text(
-            text = "${mode.displayName}模式 · 上下滚动 · 左右翻${if (mode == ReaderMode.Paged) "页" else "段"} · 确定键切换 · 设置键设置",
+            text = "${mode.displayName}模式 · 上下滚动 · 左右翻${if (mode == ReaderMode.Paged) "页" else "段"} · 确定/设置键打开菜单",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.secondary,
         )

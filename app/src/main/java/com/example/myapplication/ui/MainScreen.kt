@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -18,11 +19,13 @@ import com.example.myapplication.data.AppContainer
 import com.example.myapplication.domain.model.Book
 import com.example.myapplication.domain.model.ParsedChapter
 import com.example.myapplication.domain.reader.ReaderSettings
+import com.example.myapplication.domain.reader.ReaderTheme
 import com.example.myapplication.domain.source.SourceFile
 import com.example.myapplication.domain.usecase.ImportResult
 import com.example.myapplication.ui.importer.ImportScreen
 import com.example.myapplication.ui.reader.ReaderScreen
 import com.example.myapplication.ui.shelf.BookShelfScreen
+import com.example.myapplication.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -80,6 +83,53 @@ private data class ProgressSnapshot(
  */
 @Composable
 fun MainScreen(container: AppContainer) {
+    // ══ 【设置状态提升到这一层】══════════════════════════════
+    // 主题要包住【整个 App】，所以设置状态必须比"页面路由"更高一层。
+    // 如果让各个页面各自去读一次设置，改主题时就只有当前页会变，
+    // 切到别的页面又变回去了 —— 那是很容易踩的坑。
+    var readerSettings by remember {
+        mutableStateOf(container.settingsRepository.loadReaderSettings())
+    }
+
+    // 设置变化就落盘（首次组合也会写一次，写的是刚读出来的值）。
+    // SharedPreferences 的 apply() 是异步提交，这次写入的代价可以忽略，
+    // 换来的是不用再维护一个"是不是首次"的标志位。
+    LaunchedEffect(readerSettings) {
+        withContext(Dispatchers.IO) {
+            container.settingsRepository.saveReaderSettings(readerSettings)
+        }
+    }
+
+    // 昼夜主题包住全部页面。Surface 负责把 colorScheme.background 真正铺出来 ——
+    // 光有 MaterialTheme 是不会自动画背景的，得有个容器去取这个颜色。
+    MyApplicationTheme(darkTheme = readerSettings.theme == ReaderTheme.Night) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background,
+        ) {
+            MainScreenContent(
+                container = container,
+                readerSettings = readerSettings,
+                onSettingsChange = { readerSettings = it },
+            )
+        }
+    }
+}
+
+/**
+ * 页面路由与业务逻辑。
+ *
+ * 【为什么拆成两层】
+ * 外层只管"主题 + 设置持久化"，内层只管"现在显示哪个页面"。
+ * 这样内层的每个页面都能直接拿到 settings，不用各自再读一遍磁盘，
+ * 也不会出现"两个页面读到的设置不一致"这种问题。
+ */
+@Composable
+private fun MainScreenContent(
+    container: AppContainer,
+    readerSettings: ReaderSettings,
+    onSettingsChange: (ReaderSettings) -> Unit,
+) {
 
     // ── 界面状态 ────────────────────────────────────────────
     var screen by remember { mutableStateOf<Screen>(Screen.Shelf) }
@@ -93,19 +143,9 @@ fun MainScreen(container: AppContainer) {
     var lastResults by remember { mutableStateOf<List<ImportResult>?>(null) }
 
     // ── 阅读相关状态 ────────────────────────────────────────
-
-    /**
-     * 阅读设置。首次组合时从磁盘读一次。
-     *
-     * 【为什么敢在主线程上读】
-     * SharedPreferences 首次加载后会把内容缓存到内存，
-     * 之后每次读都是内存操作。而且我们只在 App 启动时读这一次。
-     * 真正高频的操作（阅读进度）走的是 BookRepository 的文件写入，
-     * 那个是老老实实放在 IO 线程的。
-     */
-    var readerSettings by remember {
-        mutableStateOf(container.settingsRepository.loadReaderSettings())
-    }
+    // 【注意】阅读设置（readerSettings）不在这里 ——
+    // 它被提升到了 MainScreen，因为主题要包住整个 App。
+    // 这里通过函数参数拿到它，改动通过 onSettingsChange 往上传。
 
     /** 打开中的书。null 表示还在加载 */
     var readerContent by remember { mutableStateOf<ReaderContent?>(null) }
@@ -164,16 +204,6 @@ fun MainScreen(container: AppContainer) {
         isLoading = true
         reloadBooks()
         isLoading = false
-    }
-
-    // ══ 设置变化时落盘 ══════════════════════════════════════
-    // 首次组合也会写一次（写的是刚读出来的值），看起来有点多余，
-    // 但省掉了一个"是否首次"的标志位 —— 而 SharedPreferences 的
-    // apply() 是异步提交，这次多余写入的代价可以忽略。
-    LaunchedEffect(readerSettings) {
-        withContext(Dispatchers.IO) {
-            container.settingsRepository.saveReaderSettings(readerSettings)
-        }
     }
 
     // ══ 阅读进度的防抖落盘 ══════════════════════════════════
@@ -258,6 +288,10 @@ fun MainScreen(container: AppContainer) {
                     reloadBooks()
                 }
             },
+            theme = readerSettings.theme,
+            onToggleTheme = {
+                onSettingsChange(readerSettings.copy(theme = readerSettings.theme.toggled()))
+            },
         )
 
         Screen.Import -> ImportScreen(
@@ -315,7 +349,10 @@ fun MainScreen(container: AppContainer) {
                             charOffset = absoluteOffset,
                         )
                     },
-                    onSettingsChange = { readerSettings = it },
+                    // 设置改动往上传给 MainScreen ——
+                    // readerSettings 现在是本函数的参数（不可变），
+                    // 所以这里只能转发回调，不能直接赋值。
+                    onSettingsChange = onSettingsChange,
                     onBack = {
                         // 【退出时立即写一次】防抖窗口是 800ms，
                         // 如果用户改完设置立刻退出，那次防抖可能还没执行。
