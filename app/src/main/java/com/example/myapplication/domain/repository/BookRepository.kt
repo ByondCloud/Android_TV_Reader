@@ -1,0 +1,65 @@
+package com.example.myapplication.domain.repository
+
+import com.example.myapplication.domain.model.Book
+import com.example.myapplication.domain.model.ParsedBook
+import com.example.myapplication.domain.model.ParsedChapter
+
+/**
+ * 书库仓库：负责"书"的持久化与读取。
+ *
+ * ══ 为什么先定义接口，而不是直接写实现 ══════════════════════════
+ * 因为"书存在哪里"这件事以后一定会变：
+ *   v1（现在）   ：一本书一个目录，元数据存 properties 文件
+ *   模块 8 以后  ：换成 Room 数据库（正文仍存文件，元数据入库）
+ *
+ * 只要界面依赖的是这个接口，换实现时界面一行都不用改。
+ * 这是接口存在的【唯一】理由 —— 不是为了"看起来专业"。
+ * ═══════════════════════════════════════════════════════════════
+ *
+ * ══ 为什么这些方法是【阻塞】的，而不是 suspend ══════════════════
+ * 和 [com.example.myapplication.domain.parser.BookParser] 保持同一个原则：
+ * **让纯函数保持纯，线程由调用方决定。**
+ *
+ * 仓库只负责读写文件，它不关心自己在哪个线程上跑。
+ * 调用方（模块 4 的 ViewModel）用 withContext(Dispatchers.IO) 把它包起来。
+ *
+ * 这样做最直接的好处是可测：单元测试直接调这些方法就行，
+ * 不需要引入 kotlinx-coroutines-test，也不需要 runBlocking。
+ * 依赖越少，测试越稳。
+ * ═══════════════════════════════════════════════════════════════
+ */
+interface BookRepository {
+
+    /** 书架页用：列出书库里所有的书。按"最近阅读"倒序 */
+    fun listBooks(): List<Book>
+
+    /** 按 id 找一本书；不存在返回 null */
+    fun findBook(bookId: String): Book?
+
+    /**
+     * 导入一本书：把解析结果落盘，并在书库里建立记录。
+     *
+     * @param parsed 解析结果（来自 BookParser）
+     * @param sourceFileName 用户导入时的原始文件名，用于显示和生成 id
+     * @return 新建的书（带 id，可以直接跳去阅读页）
+     */
+    fun importBook(parsed: ParsedBook, sourceFileName: String): Book
+
+    /** 读取一本书的全文（规范化后的 UTF-8 文本） */
+    fun loadText(bookId: String): String
+
+    /**
+     * 读取一本书的章节列表。
+     *
+     * 注意：章节是【现场重新切分】出来的，不从磁盘读。
+     * 为什么？见 FileBookRepository 里的详细说明 ——
+     * 简单说就是"不要存储能推导出来的数据"，否则两份数据迟早不一致。
+     */
+    fun loadChapters(bookId: String): List<ParsedChapter>
+
+    /** 保存阅读进度 */
+    fun saveProgress(bookId: String, chapterIndex: Int, charOffset: Int)
+
+    /** 删除一本书（连同它的文件目录） */
+    fun deleteBook(bookId: String)
+}

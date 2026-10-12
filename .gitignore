@@ -14,3 +14,11 @@
 .cxx
 local.properties
 /.idea/
+
+# ── 本地调试产物（不属于源码，不该进版本库）──────────────────
+# .testdata：用来生成测试小说的临时目录
+/.testdata
+# shot-*.png：在 TV 模拟器上验收界面时截的图
+/shot-*.png
+# Kotlin 编译器的会话目录
+/.kotlin
