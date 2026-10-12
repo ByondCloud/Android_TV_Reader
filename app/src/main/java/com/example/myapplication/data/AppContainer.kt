@@ -3,6 +3,7 @@ package com.example.myapplication.data
 import android.content.Context
 import com.example.myapplication.data.parser.BookParsers
 import com.example.myapplication.data.repository.FileBookRepository
+import com.example.myapplication.data.settings.SettingsRepository
 import com.example.myapplication.data.source.LocalFolderSource
 import com.example.myapplication.domain.parser.BookParserRegistry
 import com.example.myapplication.domain.repository.BookRepository
@@ -62,6 +63,14 @@ class AppContainer(context: Context) {
     private val libraryDir: File = File(appContext.filesDir, "books")
 
     val bookRepository: BookRepository = FileBookRepository(libraryDir)
+
+    // ══ 设置 ════════════════════════════════════════════════
+
+    /**
+     * 阅读设置（字号、行距、模式、是否按章节分页）。
+     * 用 SharedPreferences 持久化，理由见 SettingsRepository 的注释。
+     */
+    val settingsRepository: SettingsRepository = SettingsRepository(appContext)
 
     // ══ 用例层 ══════════════════════════════════════════════
 

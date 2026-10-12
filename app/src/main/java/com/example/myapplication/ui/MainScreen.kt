@@ -32,7 +32,7 @@ import kotlinx.coroutines.withContext
  * 应用里的三个页面。
  *
  * 【为什么用 sealed interface 而不是 enum】
- * 因为 Reader 需要带数据（书 id、书名），而 enum 的每个常量不能带不同的参数集。
+ * 因为 Reader 需要带数据（书 id），而 enum 的每个常量不能带不同的参数集。
  * sealed interface 既能表达"就这几种"，又能让每种带自己的数据。
  */
 private sealed interface Screen {
@@ -48,7 +48,18 @@ private data class ReaderContent(
     val chapters: List<ParsedChapter>,
 )
 
-/** 待写入的阅读进度快照 */
+/**
+ * 待写入的阅读进度快照。
+ *
+ * 【注意 charOffset 的语义变了】
+ * 它现在表示【全书绝对字符偏移】，而不是"第几章里的第几个字"。
+ *
+ * 为什么要改：用户可以在设置里切换"是否按章节分页"。
+ * 一拨开关，同一本书的阅读单元划分就完全不同了。
+ * 如果进度存的是"第几个单元 + 单元内偏移"，切换后位置就全乱了。
+ * 绝对偏移从书的第一页算起，和怎么切单元无关 —— 切法变了，
+ * 只需要重新算出"这个偏移落在哪个单元里"。
+ */
 private data class ProgressSnapshot(
     val bookId: String,
     val chapterIndex: Int,
@@ -65,11 +76,7 @@ private data class ProgressSnapshot(
  *
  * 【线程纪律】所有磁盘操作都在 Dispatchers.IO 上。
  * LaunchedEffect / rememberCoroutineScope 拿到的协程跑在【主线程】，
- * 而读文件、写文件、解析文本都是阻塞操作，直接在主线程做会卡界面
- * （电视上表现为按键延迟一两秒才响应）。
- *
- * 这也正是我们把 BookParser / BookRepository 设计成阻塞式的原因：
- * 它们不关心线程，线程由调用方决定 —— 这里就是那个调用方。
+ * 而读文件、写文件、解析文本都是阻塞操作，直接在主线程做会卡界面。
  */
 @Composable
 fun MainScreen(container: AppContainer) {
@@ -86,12 +93,24 @@ fun MainScreen(container: AppContainer) {
     var lastResults by remember { mutableStateOf<List<ImportResult>?>(null) }
 
     // ── 阅读相关状态 ────────────────────────────────────────
-    var readerSettings by remember { mutableStateOf(ReaderSettings()) }
+
+    /**
+     * 阅读设置。首次组合时从磁盘读一次。
+     *
+     * 【为什么敢在主线程上读】
+     * SharedPreferences 首次加载后会把内容缓存到内存，
+     * 之后每次读都是内存操作。而且我们只在 App 启动时读这一次。
+     * 真正高频的操作（阅读进度）走的是 BookRepository 的文件写入，
+     * 那个是老老实实放在 IO 线程的。
+     */
+    var readerSettings by remember {
+        mutableStateOf(container.settingsRepository.loadReaderSettings())
+    }
 
     /** 打开中的书。null 表示还在加载 */
     var readerContent by remember { mutableStateOf<ReaderContent?>(null) }
 
-    /** 最新的阅读位置（还没落盘）。用 debounce 方式写入，避免翻页时每页都写磁盘 */
+    /** 最新的阅读位置（还没落盘） */
     var liveProgress by remember { mutableStateOf<ProgressSnapshot?>(null) }
 
     val scope = rememberCoroutineScope()
@@ -127,9 +146,19 @@ fun MainScreen(container: AppContainer) {
         isLoading = false
     }
 
+    // ══ 设置变化时落盘 ══════════════════════════════════════
+    // 首次组合也会写一次（写的是刚读出来的值），看起来有点多余，
+    // 但省掉了一个"是否首次"的标志位 —— 而 SharedPreferences 的
+    // apply() 是异步提交，这次多余写入的代价可以忽略。
+    LaunchedEffect(readerSettings) {
+        withContext(Dispatchers.IO) {
+            container.settingsRepository.saveReaderSettings(readerSettings)
+        }
+    }
+
     // ══ 阅读进度的防抖落盘 ══════════════════════════════════
     // 【为什么需要防抖】
-    // 用户快速连按翻页键时，位置每几百毫秒就变一次。
+    // 用户快速连按翻页键时，位置每几十毫秒就变一次。
     // 如果每次变化都立刻写磁盘，一次连续翻页会产生几十次 IO ——
     // 既浪费电（电视盒子是 24 小时开着的设备），也会让界面卡顿。
     //
@@ -150,9 +179,9 @@ fun MainScreen(container: AppContainer) {
 
     // ══ 遥控器返回键 ════════════════════════════════════════
     // 【注意这里为什么只处理导入页】
-    // 阅读页需要按键做翻页，所以它的返回键是在 ReaderScreen 内部用
-    // onKeyEvent 处理的。如果这里也开一个 BackHandler，按一次返回键
-    // 可能同时触发两处逻辑，导致"越过书架直接退出 App"这种诡异行为。
+    // 阅读页需要按键做翻页和打开设置，所以它的返回键是在 ReaderScreen
+    // 内部用 onKeyEvent 处理的。如果这里也开一个 BackHandler，
+    // 按一次返回键可能同时触发两处逻辑，导致"越过书架直接退出 App"。
     // 一个返回键，只能有一个负责人。
     BackHandler(enabled = screen is Screen.Import) {
         screen = Screen.Shelf
@@ -203,26 +232,32 @@ fun MainScreen(container: AppContainer) {
 
             val content = readerContent
             if (content == null) {
-                LoadingScreen("正在打开《${current.bookId}》…")
+                LoadingScreen("正在打开…")
             } else {
                 ReaderScreen(
                     book = content.book,
                     text = content.text,
                     chapters = content.chapters,
-                    // 有进度就从进度开始，没读过就从第一章开头
+                    // 有进度就从进度开始，没读过就从全书开头
                     initialProgress = content.book.progress,
                     settings = readerSettings,
-                    onProgressChange = { chapterIndex, charOffset ->
-                        // 只更新内存里的快照，真正的写盘交给上面的防抖逻辑
-                        liveProgress = ProgressSnapshot(content.book.id, chapterIndex, charOffset)
+                    onProgressChange = { absoluteOffset ->
+                        // 章号是为了书架页显示"续读 · 第 N 章"。
+                        // 整本阅读模式下单元不是章节，但 chapters 数据仍在，
+                        // 所以照样能算出当前位置属于哪一章。
+                        val chapterIndex = content.chapters
+                            .indexOfLast { it.startOffset <= absoluteOffset }
+                            .coerceAtLeast(0)
+                        liveProgress = ProgressSnapshot(
+                            bookId = content.book.id,
+                            chapterIndex = chapterIndex,
+                            charOffset = absoluteOffset,
+                        )
                     },
-                    onToggleMode = {
-                        readerSettings = readerSettings.copy(mode = readerSettings.mode.toggled())
-                    },
+                    onSettingsChange = { readerSettings = it },
                     onBack = {
                         // 【退出时立即写一次】防抖窗口是 800ms，
-                        // 如果用户翻完最后一页立刻退出，那次防抖可能还没执行。
-                        // 这里补一刀，保证进度一定被保存。
+                        // 如果用户改完设置立刻退出，那次防抖可能还没执行。
                         val snapshot = liveProgress
                         scope.launch {
                             if (snapshot != null) {
