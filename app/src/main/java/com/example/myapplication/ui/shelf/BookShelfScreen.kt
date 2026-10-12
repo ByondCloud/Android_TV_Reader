@@ -146,6 +146,19 @@ fun BookShelfScreen(
     /** 正在确认删除的书 */
     var deletingBook by remember { mutableStateOf<Book?>(null) }
 
+    // ══ 【打开面板前焦点在哪本书上】════════════════════════════════
+    // 这个必须在【打开面板的瞬间】记下来，不能等关闭时再去读 focusedBook。
+    //
+    // 原因是因果颠倒：
+    //   1. 面板关闭 -> 焦点丢失
+    //   2. Compose 把焦点给了第一个可聚焦元素（第一本书）
+    //   3. 那本书的 onFocus 触发 -> focusedBook 被污染成第一本
+    //   4. 我们的恢复逻辑才执行 -> 读到的已经是错的了
+    //
+    // 实测就是这个现象：在 book-07 上开菜单，关掉之后焦点回到 book-01。
+    // ═══════════════════════════════════════════════════════════════
+    var bookBeforePanel by remember { mutableStateOf<Book?>(null) }
+
     // ══ 批量删除模式 ════════════════════════════════════════
     /** 是否处于批量勾选模式 */
     var batchMode by remember { mutableStateOf(false) }
@@ -185,6 +198,8 @@ fun BookShelfScreen(
                 ) {
                     val target = focusedBook
                     if (target != null) {
+                        // ★ 先记下"面板打开前焦点在哪本书"，供关闭时恢复
+                        bookBeforePanel = target
                         menuBook = target
                         true
                     } else {
@@ -273,8 +288,17 @@ fun BookShelfScreen(
         } else if (hadPanelOpen) {
             hadPanelOpen = false
             if (!pendingFocusIsBatch && pendingFocusBookId == null) {
-                // 没发生删除 —— 回到原处
-                focusedBook?.let { requestFocusOn(FocusTarget.Book(it.id)) }
+                // 没发生删除 —— 回到【面板打开前】那本书。
+                //
+                // 【为什么用 bookBeforePanel 而不是 focusedBook】
+                // 面板关闭时焦点会先丢一次，Compose 把它给了第一个可聚焦
+                // 元素（第一本书），那本书的 onFocus 立刻把 focusedBook
+                // 覆盖成第一本。等这段代码执行时读到的已经是错的值了 ——
+                // 实测就是在 book-07 上开菜单、关掉后焦点跑到 book-01。
+                //
+                // bookBeforePanel 是在【打开面板的瞬间】记下来的，
+                // 不受这个污染影响。
+                bookBeforePanel?.let { requestFocusOn(FocusTarget.Book(it.id)) }
             }
         }
     }
@@ -417,8 +441,9 @@ fun BookShelfScreen(
                     selectedIds = emptySet()
                     batchMode = true
                     // 同上：批量模式下的落点是书本（确定键在那里是勾选），
-                    // 而「批量删除」此刻是禁用状态、接不了焦点
-                    focusedBook?.let { requestFocusOn(FocusTarget.Book(it.id)) }
+                    // 而「批量删除」此刻是禁用状态、接不了焦点。
+                    // 用 bookBeforePanel 而不是 focusedBook —— 后者可能已被污染。
+                    bookBeforePanel?.let { requestFocusOn(FocusTarget.Book(it.id)) }
                 },
                 onDismiss = { menuBook = null },
             )
