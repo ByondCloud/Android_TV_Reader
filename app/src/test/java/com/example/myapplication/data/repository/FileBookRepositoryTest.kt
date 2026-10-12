@@ -256,6 +256,38 @@ class FileBookRepositoryTest {
         }
     }
 
+    // ══ 按来源文件名查重 ════════════════════════════════════
+
+    @Test
+    fun `按来源文件名能查到书`() {
+        val imported = importSample("剑与灯.txt")
+
+        val found = repo.findBySourceName("剑与灯.txt")
+
+        assertEquals(imported.id, found?.id)
+    }
+
+    @Test
+    fun `没导入过的文件名查不到`() {
+        importSample("剑与灯.txt")
+        assertNull(repo.findBySourceName("根本没这本.txt"))
+    }
+
+    /**
+     * 改了书名【不影响】按来源文件名查重。
+     *
+     * 这两件事必须解耦：书名是给用户看的、可以随便改；
+     * 来源文件名是导入记录的标识、改了书名也不该变。
+     * 否则用户改一次书名，就能把同一本书再导一遍。
+     */
+    @Test
+    fun `改了书名之后按来源文件名依然查得到`() {
+        val imported = importSample("剑与灯.txt")
+        repo.renameBook(imported.id, "完全不同的书名")
+
+        assertEquals(imported.id, repo.findBySourceName("剑与灯.txt")?.id)
+    }
+
     // ══ 删除 ════════════════════════════════════════════════
 
     @Test

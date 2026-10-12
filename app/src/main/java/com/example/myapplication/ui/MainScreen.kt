@@ -127,15 +127,35 @@ fun MainScreen(container: AppContainer) {
         }
     }
 
-    fun startImport(list: List<SourceFile>) {
+    /**
+     * 导入一批文件，然后回到书架。
+     *
+     * ══ 【为什么导入完就直接跳回书架】══════════════════════════════
+     * 用户的意图是"我要看书"，导入只是中间步骤。
+     * 导完还停在导入页，他得自己再按一次「返回书架」——
+     * 这一步没有任何信息量，纯属多余。
+     *
+     * 【一个例外】如果这一批【一本都没导进去】（全是重复或失败），
+     * 就留在导入页 —— 否则用户被弹回书架，完全不知道发生了什么，
+     * 只会觉得"我明明点了导入，怎么什么都没变"。
+     * 留在原地才能看到那条结果提示。
+     * ═══════════════════════════════════════════════════════════════
+     */
+    fun importThenBack(list: List<SourceFile>) {
         if (list.isEmpty() || isImporting) return
         isImporting = true
         lastResults = null
         scope.launch {
-            val results = withContext(Dispatchers.IO) { container.bookImporter.importAll(list) }
+            val results = withContext(Dispatchers.IO) {
+                container.bookImporter.importAll(list)
+            }
             lastResults = results
             reloadBooks()
             isImporting = false
+
+            if (results.any { it is ImportResult.Success }) {
+                screen = Screen.Shelf
+            }
         }
     }
 
@@ -243,11 +263,17 @@ fun MainScreen(container: AppContainer) {
         Screen.Import -> ImportScreen(
             dropDirPath = container.dropDir.absolutePath,
             files = files,
+            // 已导入的来源文件名，导入页用它标出"已在书架"并跳过重复勾选
+            importedNames = remember(books) {
+                books.map { it.sourceFileName }.filter { it.isNotBlank() }.toSet()
+            },
             isImporting = isImporting,
             results = lastResults,
             onRescan = { scope.launch { scanFiles() } },
-            onImportAll = { startImport(files.orEmpty()) },
-            onImportOne = { sourceFile -> startImport(listOf(sourceFile)) },
+            // 三种入口走的是同一条流程：导入 → 回书架
+            onImportAll = { importThenBack(files.orEmpty()) },
+            onImportBatch = { picked -> importThenBack(picked) },
+            onImportOne = { sourceFile -> importThenBack(listOf(sourceFile)) },
             onBack = { screen = Screen.Shelf },
         )
 

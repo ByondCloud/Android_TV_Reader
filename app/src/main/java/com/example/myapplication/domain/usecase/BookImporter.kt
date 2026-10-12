@@ -26,6 +26,18 @@ import com.example.myapplication.domain.source.SourceFile
 sealed interface ImportResult {
     data class Success(val book: Book) : ImportResult
     data class Failure(val fileName: String, val reason: String) : ImportResult
+    /**
+     * 这本书已经导入过了，跳过。
+     *
+     * 【为什么单独一个类型，而不是塞进 Failure】
+     * 因为"已经导入过"不是错误 —— 它是用户很可能遇到、
+     * 而且完全可以接受的结果。如果混进 Failure，
+     * 界面就会把它显示成红色的"导入失败：xxx"，
+     * 用户会以为哪里坏了，然后反复重试。
+     *
+     * 这类"不是错误但也算不上成功"的情况，值得单独一个分支。
+     */
+    data class Duplicate(val fileName: String, val existingTitle: String) : ImportResult
 }
 
 /**
@@ -64,6 +76,14 @@ class BookImporter(
      */
     fun import(source: SourceFile): ImportResult {
         val name = source.displayName
+
+        // ⓪ 查重 —— 【放在最前面，在找解析器和读文件之前】
+        //    顺序很重要：重复的书连"读进内存 + 解析"这两步都可以省掉。
+        //    一本书几 MB，用户如果重复点几次全部导入，
+        //    这里省下的是几十秒的无效 IO 和解析。
+        repository.findBySourceName(name)?.let { existing ->
+            return ImportResult.Duplicate(name, existing.title)
+        }
 
         // ① 找解析器。找不到就是"格式不支持"，这不是错误，是正常情况
         val parser = registry.parserFor(name)

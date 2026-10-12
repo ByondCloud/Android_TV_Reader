@@ -161,6 +161,100 @@ class BookImporterTest {
         assertTrue(importer.importAll(emptyList()).isEmpty())
     }
 
+    // ══ 查重 ════════════════════════════════════════════════
+
+    /**
+     * 【这一轮新增的核心行为】
+     * 同一个文件导入两次，第二次必须被识别出来并跳过。
+     *
+     * 为什么重要：用户会反复点「全部导入」（尤其是他以为没成功的时候）。
+     * 没有查重的话，书架上会出现一堆一模一样的书，
+     * 每本还各占一份正文文件 —— 磁盘会被悄悄吃掉。
+     */
+    @Test
+    fun `重复导入同一个文件会被跳过`() {
+        val src = txtSource()
+
+        assertTrue(importer.import(src) is ImportResult.Success)
+
+        // 再导一次同一个文件
+        val second = importer.import(src)
+
+        assertTrue("期望 Duplicate，实际是 $second", second is ImportResult.Duplicate)
+        val dup = second as ImportResult.Duplicate
+        assertEquals("剑与灯.txt", dup.fileName)
+        assertEquals("剑与灯", dup.existingTitle)   // 告诉用户"书架上已经有这本了"
+
+        // 关键断言：书库里还是只有一本，没有产生第二份
+        assertEquals(1, repository.listBooks().size)
+    }
+
+    /**
+     * 用户主动改文件名再导入 → 当成一本新书。
+     *
+     * 这是有意的：改名是他明确表达"我要再来一份"的方式。
+     * 如果这里也拦，用户就没办法导入同一本书的两个版本了。
+     */
+    @Test
+    fun `改了文件名就当成新书导入`() {
+        assertTrue(importer.import(txtSource("剑与灯.txt")) is ImportResult.Success)
+        assertTrue(importer.import(txtSource("剑与灯-第二版.txt")) is ImportResult.Success)
+
+        assertEquals(2, repository.listBooks().size)
+    }
+
+    /**
+     * 批量导入时，重复的算 Duplicate，【不能算 Failure】。
+     *
+     * 因为界面会据此显示不同的东西：
+     *   Duplicate → "已在书架 2 本"（正常提示）
+     *   Failure   → "失败 2 本"（红色警告，用户会以为坏了）
+     */
+    @Test
+    fun `批量导入时重复的不算失败`() {
+        val a = txtSource("甲.txt")
+        val b = txtSource("乙.txt")
+        importer.import(a)                       // 先把甲导进去
+
+        val results = importer.importAll(listOf(a, b))
+
+        assertEquals(1, results.count { it is ImportResult.Success })
+        assertEquals(1, results.count { it is ImportResult.Duplicate })
+        assertEquals("重复不该被算作失败", 0, results.count { it is ImportResult.Failure })
+        assertEquals(2, repository.listBooks().size)
+    }
+
+    /**
+     * 查重必须发生在【读文件之前】。
+     *
+     * 构造方式：先把一本好书导进去，然后把源文件内容清空。
+     *   - 如果查重在前 → Duplicate（压根没去读那个空文件）
+     *   - 如果查重在后 → Failure("文件是空的")（说明白读了一遍）
+     *
+     * 这条守的是一个性能前提：用户重复点「全部导入」时，
+     * 每本重复的书都不该再经历一次完整的读盘 + 解码 + 解析。
+     * 一本书几 MB，几十本就是几十秒的无效工作。
+     */
+    @Test
+    fun `查重发生在读文件之前`() {
+        val f = File(tmp.root, "剑与灯.txt")
+        f.writeBytes(novel.toByteArray(Charsets.UTF_8))
+        val src = SourceFile(f, "剑与灯.txt", f.length(), f.lastModified())
+
+        assertTrue(importer.import(src) is ImportResult.Success)
+
+        // 把源文件清空
+        f.writeBytes(ByteArray(0))
+        val emptied = SourceFile(f, "剑与灯.txt", f.length(), f.lastModified())
+
+        val second = importer.import(emptied)
+
+        assertTrue(
+            "查重应该先于读取文件，实际是 $second（说明白读了一遍空文件）",
+            second is ImportResult.Duplicate
+        )
+    }
+
     // ══ 与编码探测的联动 ════════════════════════════════════
 
     /**

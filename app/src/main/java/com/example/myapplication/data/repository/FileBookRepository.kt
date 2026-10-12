@@ -77,6 +77,17 @@ class FileBookRepository(
 
     override fun findBook(bookId: String): Book? = readMeta(File(booksDir, bookId))
 
+    /**
+     * 按原始文件名查重。
+     *
+     * 书库规模是"几百本"量级，listBooks() 只读几十字节一个的 meta.properties，
+     * 直接线性扫一遍完全够用，不值得为它建索引。
+     * （真到了几千本，再在这里加一个文件名到 id 的内存缓存即可，
+     *   界面上因为调的是这个接口方法，不需要跟着改。）
+     */
+    override fun findBySourceName(sourceFileName: String): Book? =
+        listBooks().firstOrNull { it.sourceFileName == sourceFileName }
+
     override fun loadText(bookId: String): String {
         val f = File(File(booksDir, bookId), CONTENT_FILE)
         if (!f.isFile) throw NoSuchElementException("书籍正文文件不存在：$bookId")

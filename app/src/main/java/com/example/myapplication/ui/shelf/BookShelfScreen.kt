@@ -375,7 +375,17 @@ private fun BookGrid(
                 onClick = { if (batchMode) onToggleSelect(book) else onOpenBook(book) },
                 onFocus = { onFocusBook(book) },
                 // 只给第一张卡片挂 FocusRequester
-                modifier = if (index == 0) Modifier.focusRequester(firstCard) else Modifier,
+                //
+                // ══ 【这个 padding 是给"聚焦放大"留空间的】══════════════
+                // 聚焦时卡片会 scale(1.05f) 放大，而这是【绘制变换】，
+                // 不参与布局测量 —— 也就是说放大后的部分会超出格子边界。
+                // 网格会把它裁掉，表现就是"黄色焦点框的顶部被上面的内容切掉了"。
+                //
+                // 给格子留 8dp 内边距，放大后（水平约 7.6dp、垂直约 3.3dp）
+                // 就仍然落在格子内部，不会被裁。
+                // ═══════════════════════════════════════════════════════
+                modifier = (if (index == 0) Modifier.focusRequester(firstCard) else Modifier)
+                    .padding(8.dp),
             )
         }
     }

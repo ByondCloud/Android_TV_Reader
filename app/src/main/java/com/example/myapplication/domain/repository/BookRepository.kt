@@ -37,6 +37,17 @@ interface BookRepository {
     fun findBook(bookId: String): Book?
 
     /**
+     * 按【原始文件名】查一本书；不存在返回 null。
+     * 导入时用来判断重复（依据见 [Book.sourceFileName] 的注释）。
+     *
+     * 【为什么单独开一个方法，而不是在界面层用 listBooks() 自己筛】
+     * 因为"怎么判断重复"是业务规则，不是界面细节。
+     * 将来如果改成用内容哈希查重，只需要改这里的实现，
+     * 导入界面一行都不用动。
+     */
+    fun findBySourceName(sourceFileName: String): Book?
+
+    /**
      * 导入一本书：把解析结果落盘，并在书库里建立记录。
      *
      * @param parsed 解析结果（来自 BookParser）
