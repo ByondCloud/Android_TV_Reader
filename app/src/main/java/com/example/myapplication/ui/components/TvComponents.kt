@@ -77,6 +77,7 @@ private val UnfocusedBorder = Color(0x22FFFFFF)
 @Composable
 fun Modifier.tvFocusable(
     onClick: () -> Unit,
+    enabled: Boolean = true,
     shape: Shape = RoundedCornerShape(8.dp),
     focusedScale: Float = 1.05f,
     focusedBorderWidth: Dp = 3.dp,
@@ -99,6 +100,7 @@ fun Modifier.tvFocusable(
         )
         .onFocusChanged { isFocused = it.isFocused }
         .clickable(
+            enabled = enabled,
             interactionSource = interactionSource,
             indication = null,
             onClick = onClick,
@@ -117,12 +119,13 @@ fun Modifier.tvFocusable(
 fun TvCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     contentPadding: PaddingValues = PaddingValues(16.dp),
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(
         modifier = modifier
-            .tvFocusable(onClick = onClick)
+            .tvFocusable(onClick = onClick, enabled = enabled)
             // padding 写在 tvFocusable 【之后】，所以它在内层 ——
             // 结果是背景和边框包住内边距，而不是被内边距切掉。
             .padding(contentPadding),
@@ -139,11 +142,13 @@ fun TvButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Box(
         modifier = modifier
             .tvFocusable(
                 onClick = onClick,
+                enabled = enabled,
                 shape = RoundedCornerShape(24.dp),
                 focusedScale = 1.08f,
             )
@@ -153,7 +158,11 @@ fun TvButton(
         Text(
             text = text,
             style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = if (enabled) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.secondary
+            },
         )
     }
 }

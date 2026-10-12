@@ -60,6 +60,19 @@ interface BookRepository {
     /** 保存阅读进度 */
     fun saveProgress(bookId: String, chapterIndex: Int, charOffset: Int)
 
+    /**
+     * 修改书名。
+     *
+     * 【为什么只改元数据，不动正文和目录名】
+     * 书籍目录名（也就是 bookId）是内部标识，改它要连带迁移文件、
+     * 更新所有引用，风险大收益小。而书名纯粹是给用户看的显示名称，
+     * 改 meta.properties 里的一个字段就够了。
+     *
+     * 这也解释了一个现象：你在文件管理器里看到的中文目录名，
+     * 和你后来改的书名可能不一样 —— 那是正常的。
+     */
+    fun renameBook(bookId: String, newTitle: String)
+
     /** 删除一本书（连同它的文件目录） */
     fun deleteBook(bookId: String)
 }

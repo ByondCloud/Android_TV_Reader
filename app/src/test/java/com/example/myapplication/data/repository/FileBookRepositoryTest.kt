@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -200,6 +201,59 @@ class FileBookRepositoryTest {
 
         // 而且它必须老老实实待在书库目录里面
         assertTrue(File(booksDir(), book.id).absolutePath.startsWith(booksDir().absolutePath))
+    }
+
+    // ══ 修改书名 ════════════════════════════════════════════
+
+    @Test
+    fun `修改书名之后能读回来`() {
+        val book = importSample()
+        repo.renameBook(book.id, "新的书名")
+
+        assertEquals("新的书名", repo.findBook(book.id)!!.title)
+    }
+
+    /**
+     * 【这条守的是和 saveProgress 同一类错误】
+     * renameBook 的正确实现是"读出已有元数据 → copy 改 title → 写回"。
+     * 如果图省事直接 new 一个只带书名的 Book 覆盖文件，
+     * 作者、编码、阅读进度就会【全部丢失】。
+     * 这种 bug 在界面上表现为"改个书名，进度没了"，很难联想到一起。
+     */
+    @Test
+    fun `修改书名不会丢掉作者编码和阅读进度`() {
+        val book = importSample()
+        repo.saveProgress(book.id, chapterIndex = 3, charOffset = 999)
+        repo.renameBook(book.id, "剑与灯（修订版）")
+
+        val reloaded = repo.findBook(book.id)!!
+        assertEquals("剑与灯（修订版）", reloaded.title)
+        assertEquals("练习生", reloaded.author)
+        assertEquals("UTF-8", reloaded.charsetName)
+        assertEquals(BookFormat.TXT, reloaded.format)
+        assertEquals(3, reloaded.progress.chapterIndex)
+        assertEquals(999, reloaded.progress.charOffset)
+    }
+
+    /**
+     * 书名改了，但 bookId（目录名）不变。
+     * 这是刻意的设计：id 是内部标识，改它要迁移文件、更新所有引用，
+     * 风险大收益小。书名只是显示名称。
+     */
+    @Test
+    fun `修改书名不会改变书籍目录`() {
+        val book = importSample()
+        repo.renameBook(book.id, "完全不同的名字")
+
+        assertTrue("目录应该还在原来的位置", File(booksDir(), book.id).isDirectory)
+        assertEquals(1, repo.listBooks().size)
+    }
+
+    @Test
+    fun `修改不存在的书会失败`() {
+        assertThrows(NoSuchElementException::class.java) {
+            repo.renameBook("根本没有这本书", "新名字")
+        }
     }
 
     // ══ 删除 ════════════════════════════════════════════════

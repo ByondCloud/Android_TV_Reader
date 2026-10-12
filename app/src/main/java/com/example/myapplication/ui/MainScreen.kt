@@ -203,6 +203,22 @@ fun MainScreen(container: AppContainer) {
                 lastResults = null
                 scope.launch { scanFiles() }
             },
+            onRenameBook = { book, newTitle ->
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        runCatching { container.bookRepository.renameBook(book.id, newTitle) }
+                    }
+                    reloadBooks()
+                }
+            },
+            onDeleteBook = { book ->
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        runCatching { container.bookRepository.deleteBook(book.id) }
+                    }
+                    reloadBooks()
+                }
+            },
         )
 
         Screen.Import -> ImportScreen(

@@ -136,6 +136,14 @@ class FileBookRepository(
         )
     }
 
+    override fun renameBook(bookId: String, newTitle: String) {
+        val dir = File(booksDir, bookId)
+        // 和 saveProgress 一样：先读出来再 copy 改一个字段。
+        // 直接 new 一个只带书名的 Book 覆盖文件，会把作者、编码、进度全抹掉。
+        val existing = readMeta(dir) ?: throw NoSuchElementException("书籍不存在：$bookId")
+        writeMeta(dir, existing.copy(title = newTitle))
+    }
+
     override fun deleteBook(bookId: String) {
         // 注意：这里传进来的 bookId 必须是我们自己生成的目录名。
         // 如果它来自用户输入且含有 "../"，deleteRecursively 就可能删到书库外面去
