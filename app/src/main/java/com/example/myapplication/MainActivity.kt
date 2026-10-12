@@ -32,6 +32,31 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // ══ 【临时实验：强制软件渲染，验证 GPU 图层假设】══════════════
+        // 背景：这台小米电视用的是联发科 MT9655 + Mali GPU。
+        // 实测到一个现象：Compose 里凡是依赖 graphicsLayer 的东西
+        // （Material3 的 Surface、Modifier.scale、LazyVerticalGrid、
+        //   verticalScroll）都会导致焦点视觉【不重绘】——
+        // 屏幕上看不出焦点在哪。
+        //
+        // 规律是：
+        //   元素在图层里     -> 图层被缓存，内容变化不重绘
+        //   元素不在图层里   -> 被合进父级缓存，也不重绘
+        //   只有"图层参数变化"（scale 数值）能走到屏幕
+        //
+        // 这指向 Mali 驱动与 Compose 的 RenderNode 缓存不兼容。
+        // 把绘制降级到软件路径可以绕开 GPU 图层，
+        // 用来验证这个判断成立与否。
+        //
+        // 【注意】这是诊断手段，不是最终方案 —— 软件渲染会牺牲性能。
+        // 如果验证成立，正确的做法是收窄影响面（只对需要的 View 降级），
+        // 或者用不依赖 graphicsLayer 的写法重做焦点视觉。
+        // ═══════════════════════════════════════════════════════════════
+        window.decorView.setLayerType(
+            android.view.View.LAYER_TYPE_SOFTWARE,
+            null
+        )
+
         // 从 Application 取出全局依赖容器。
         // appContainer 是定义在 NovelReaderApp.kt 里的 Context 扩展属性。
         //
