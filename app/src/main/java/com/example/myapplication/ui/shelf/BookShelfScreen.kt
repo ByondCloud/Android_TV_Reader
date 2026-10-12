@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -96,6 +97,7 @@ fun BookShelfScreen(
     onImportClick: () -> Unit,
     onRenameBook: (Book, String) -> Unit,
     onDeleteBook: (Book) -> Unit,
+    onDeleteBooks: (List<String>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     /** 当前有焦点的书。设置键要对它生效 */
@@ -110,19 +112,38 @@ fun BookShelfScreen(
     /** 正在确认删除的书 */
     var deletingBook by remember { mutableStateOf<Book?>(null) }
 
+    // ══ 批量删除模式 ════════════════════════════════════════
+    /** 是否处于批量勾选模式 */
+    var batchMode by remember { mutableStateOf(false) }
+
+    /** 已勾选的书 id。用 Set 而不是 List：判重和增删都是 O(1) */
+    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+
     val panelOpen = menuBook != null || renamingBook != null || deletingBook != null
+
+    // 两个"长按快捷跳转"的目标。长按上 → 导入按钮；长按下 → 右下角删除按钮。
+    val importRequester = remember { FocusRequester() }
+    val batchDeleteRequester = remember { FocusRequester() }
 
     Box(
         modifier = modifier
             .fillMaxSize()
             // 【按键处理放在根容器上】
-            // Compose 的按键事件会从焦点元素【向上冒泡】。
+            // Compose 的按键事件会从焦点元素向上冒泡。
             // 卡片只消费"确定键"，设置键它不关心，于是冒泡到这里被我们接住。
             // 这样就不需要给每张卡片都写一遍按键逻辑。
             .onKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown &&
-                    (event.key == Key.Settings || event.key == Key.Menu) &&
-                    !panelOpen
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+
+                // 批量模式下按返回键退出（并清空勾选）
+                if (batchMode && event.key == Key.Back) {
+                    batchMode = false
+                    selectedIds = emptySet()
+                    return@onKeyEvent true
+                }
+
+                if ((event.key == Key.Settings || event.key == Key.Menu) &&
+                    !panelOpen && !batchMode
                 ) {
                     val target = focusedBook
                     if (target != null) {
@@ -135,6 +156,40 @@ fun BookShelfScreen(
                     false
                 }
             }
+            // ══ 【批量模式下的长按快捷跳转】══════════════════════════
+            // 需求：短按方向键让焦点逐格移动；长按上直接跳到「导入书籍」，
+            //       长按下直接跳到右下角的「删除」。
+            //
+            // 【为什么必须用 onPreviewKeyEvent 而不是 onKeyEvent】
+            // 短按要【放行】给焦点系统，否则焦点根本不会移动。
+            // onPreviewKeyEvent 是下发阶段，我们能先看到事件；
+            // 只在"这是长按产生的重复事件"时才拦截，短按返回 false 放行。
+            //
+            // 【怎么判断长按】
+            // 系统在按住方向键时会重复发送 KeyDown，并递增 repeatCount：
+            //   repeatCount == 0  → 用户刚按下去（短按的第一次）
+            //   repeatCount >  0  → 按住不放产生的重复
+            // 所以"放行第一次、拦截后续"正好等于"短按正常走、长按跳转"。
+            .onPreviewKeyEvent { event ->
+                if (!batchMode || event.type != KeyEventType.KeyDown) {
+                    return@onPreviewKeyEvent false
+                }
+                if (event.nativeKeyEvent.repeatCount <= 0) {
+                    return@onPreviewKeyEvent false
+                }
+
+                when (event.key) {
+                    Key.DirectionDown -> {
+                        runCatching { batchDeleteRequester.requestFocus() }
+                        true
+                    }
+                    Key.DirectionUp -> {
+                        runCatching { importRequester.requestFocus() }
+                        true
+                    }
+                    else -> false
+                }
+            }
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
 
@@ -142,6 +197,7 @@ fun BookShelfScreen(
                 count = books.size,
                 onImportClick = onImportClick,
                 enabled = !panelOpen,
+                importRequester = importRequester,
             )
 
             Spacer(Modifier.height(20.dp))
@@ -152,10 +208,34 @@ fun BookShelfScreen(
                 else -> BookGrid(
                     books = books,
                     enabled = !panelOpen,
+                    batchMode = batchMode,
+                    selectedIds = selectedIds,
                     onOpenBook = onOpenBook,
+                    onToggleSelect = { book ->
+                        selectedIds = if (book.id in selectedIds) {
+                            selectedIds - book.id
+                        } else {
+                            selectedIds + book.id
+                        }
+                    },
                     onFocusBook = { focusedBook = it },
                 )
             }
+        }
+
+        // ── 批量模式：右下角的删除按钮 ──────────────────────
+        if (batchMode) {
+            BatchBar(
+                selectedCount = selectedIds.size,
+                onDelete = {
+                    val ids = selectedIds.toList()
+                    batchMode = false
+                    selectedIds = emptySet()
+                    onDeleteBooks(ids)
+                },
+                deleteRequester = batchDeleteRequester,
+                modifier = Modifier.align(Alignment.BottomEnd),
+            )
         }
 
         // ── 操作菜单 ────────────────────────────────────────
@@ -169,6 +249,11 @@ fun BookShelfScreen(
                 onDelete = {
                     menuBook = null
                     deletingBook = book
+                },
+                onBatchDelete = {
+                    menuBook = null
+                    selectedIds = emptySet()
+                    batchMode = true
                 },
                 onDismiss = { menuBook = null },
             )
@@ -205,9 +290,12 @@ fun BookShelfScreen(
 // ══════════════════════════════════════════════════════════════════
 
 @Composable
-private fun ShelfHeader(count: Int, onImportClick: () -> Unit, enabled: Boolean) {
-    val importButton = remember { FocusRequester() }
-
+private fun ShelfHeader(
+    count: Int,
+    onImportClick: () -> Unit,
+    enabled: Boolean,
+    importRequester: FocusRequester,
+) {
     // ══ 空书架时的初始焦点 ══════════════════════════════════════
     // BookGrid 只在"有书"时才渲染，所以书架为空时，
     // 全页面只有"导入书籍"这一个可聚焦元素。
@@ -215,7 +303,7 @@ private fun ShelfHeader(count: Int, onImportClick: () -> Unit, enabled: Boolean)
     // 用户按遥控器方向键毫无反应，看起来跟卡死一样。
     LaunchedEffect(count, enabled) {
         if (count == 0 && enabled) {
-            runCatching { importButton.requestFocus() }
+            runCatching { importRequester.requestFocus() }
         }
     }
 
@@ -239,7 +327,7 @@ private fun ShelfHeader(count: Int, onImportClick: () -> Unit, enabled: Boolean)
             text = "导入书籍",
             onClick = onImportClick,
             enabled = enabled,
-            modifier = Modifier.focusRequester(importButton),
+            modifier = Modifier.focusRequester(importRequester),
         )
     }
 }
@@ -255,7 +343,10 @@ private fun ShelfHeader(count: Int, onImportClick: () -> Unit, enabled: Boolean)
 private fun BookGrid(
     books: List<Book>,
     enabled: Boolean,
+    batchMode: Boolean,
+    selectedIds: Set<String>,
     onOpenBook: (Book) -> Unit,
+    onToggleSelect: (Book) -> Unit,
     onFocusBook: (Book) -> Unit,
 ) {
     val firstCard = remember { FocusRequester() }
@@ -278,7 +369,10 @@ private fun BookGrid(
             BookCard(
                 book = book,
                 enabled = enabled,
-                onClick = { onOpenBook(book) },
+                batchMode = batchMode,
+                selected = book.id in selectedIds,
+                // 批量模式下"确定键"变成"勾选/取消勾选"，而不是打开这本书
+                onClick = { if (batchMode) onToggleSelect(book) else onOpenBook(book) },
                 onFocus = { onFocusBook(book) },
                 // 只给第一张卡片挂 FocusRequester
                 modifier = if (index == 0) Modifier.focusRequester(firstCard) else Modifier,
@@ -292,53 +386,150 @@ private fun BookGrid(
 private fun BookCard(
     book: Book,
     enabled: Boolean,
+    batchMode: Boolean,
+    selected: Boolean,
     onClick: () -> Unit,
     onFocus: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    TvCard(
-        onClick = onClick,
-        enabled = enabled,
-        // defaultMinSize 保证即使书名很短，卡片也是统一高度的矩形，
-        // 否则网格会变得参差不齐。
+    // 外层 Box 是为了把"勾选框"叠在卡片右上角。
+    // 注意 focusRequester / onFocusChanged 都挂在 TvCard 上（它才是可聚焦的元素），
+    // 不是挂在这个 Box 上 —— 挂在不可聚焦的容器上是不起作用的。
+    Box {
+        TvCard(
+            onClick = onClick,
+            enabled = enabled,
+            // defaultMinSize 保证即使书名很短，卡片也是统一高度的矩形，
+            // 否则网格会变得参差不齐。
+            modifier = modifier
+                // ══ 【fillMaxWidth 是必需的】══════════════════════════
+                // Column 默认是 wrap content，只按文字宽度撑开（实测约 210px），
+                // 而网格格子有 545px 宽。后果是卡片只占格子左边一小条，
+                // 右边一大片空白。
+                //
+                // 这个 bug 一直存在，但没有勾选框时肉眼看不出来 ——
+                // 直到我加了 align(TopEnd) 的勾选框，它直接飘到卡片外面去了。
+                // 换句话说：是"勾选框位置不对"这个现象，暴露了"卡片没填满"这个根因。
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 132.dp)
+                // 【焦点跟踪】外层再挂一个 onFocusChanged。
+                // 它观察的是内层 clickable 创建的那个焦点节点，
+                // 所以能正确收到"我这张卡片被选中了"的通知。
+                // 设置键就是靠这个知道"当前该对哪本书动手"。
+                .onFocusChanged { if (it.isFocused) onFocus() },
+        ) {
+            Text(
+                text = book.title,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+
+            Spacer(Modifier.height(6.dp))
+
+            Text(
+                text = book.subtitle.ifBlank { "未知作者" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+
+            // weight(1f) 吃掉剩余空间，把下面这行进度推到卡片底部
+            Spacer(Modifier.weight(1f))
+
+            Text(
+                text = if (book.progress.isStarted) {
+                    // chapterIndex 从 0 开始，显示给用户要 +1
+                    "续读 · 第 ${book.progress.chapterIndex + 1} 章"
+                } else {
+                    "未读"
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = if (book.progress.isStarted) ReaderFocus else MaterialTheme.colorScheme.secondary,
+            )
+        }
+
+        // 批量模式下才显示勾选框
+        if (batchMode) {
+            SelectionMark(
+                selected = selected,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(10.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 右上角的勾选框。
+ *
+ * 【为什么不用 Material3 的 Checkbox】
+ * 那个组件是为触摸屏设计的小控件（约 20dp），在电视上既看不清，
+ * 它的内部焦点行为也会和卡片本身抢焦点。
+ * 我们自己画一个大方块：三米外能看清，而且不参与焦点遍历
+ * （它是卡片的一部分，勾选状态由卡片的确定键切换）。
+ */
+@Composable
+private fun SelectionMark(selected: Boolean, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(7.dp)
+    Box(
         modifier = modifier
-            .defaultMinSize(minHeight = 132.dp)
-            // 【焦点跟踪】外层再挂一个 onFocusChanged。
-            // 它观察的是内层 clickable 创建的那个焦点节点，
-            // 所以能正确收到"我这张卡片被选中了"的通知。
-            // 设置键就是靠这个知道"当前该对哪本书动手"。
-            .onFocusChanged { if (it.isFocused) onFocus() },
+            .size(30.dp)
+            .background(
+                color = if (selected) ReaderFocus else Color(0x66000000),
+                shape = shape,
+            )
+            .border(
+                width = 2.dp,
+                color = if (selected) ReaderFocus else Color(0xAAFFFFFF),
+                shape = shape,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (selected) {
+            Text(
+                text = "✓",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.background,
+            )
+        }
+    }
+}
+
+/**
+ * 批量模式下的底部操作条（对齐到页面右下角）。
+ */
+@Composable
+private fun BatchBar(
+    selectedCount: Int,
+    onDelete: () -> Unit,
+    deleteRequester: FocusRequester,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(
-            text = book.title,
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-
-        Spacer(Modifier.height(6.dp))
-
-        Text(
-            text = book.subtitle.ifBlank { "未知作者" },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.secondary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-
-        // weight(1f) 吃掉剩余空间，把下面这行进度推到卡片底部
-        Spacer(Modifier.weight(1f))
-
-        Text(
-            text = if (book.progress.isStarted) {
-                // chapterIndex 从 0 开始，显示给用户要 +1
-                "续读 · 第 ${book.progress.chapterIndex + 1} 章"
+            text = if (selectedCount > 0) {
+                "已选 $selectedCount 本 · 返回键退出"
             } else {
-                "未读"
+                "确定键勾选要删除的书 · 返回键退出"
             },
-            style = MaterialTheme.typography.labelMedium,
-            color = if (book.progress.isStarted) ReaderFocus else MaterialTheme.colorScheme.secondary,
+            style = MaterialTheme.typography.titleMedium,
+            color = if (selectedCount > 0) ReaderFocus else MaterialTheme.colorScheme.secondary,
+        )
+
+        TvButton(
+            text = "删除选中的书",
+            onClick = onDelete,
+            // 一本都没选时不可点，避免误触空删除
+            enabled = selectedCount > 0,
+            modifier = Modifier.focusRequester(deleteRequester),
         )
     }
 }
@@ -423,6 +614,7 @@ private fun BookActionPanel(
     book: Book,
     onRename: () -> Unit,
     onDelete: () -> Unit,
+    onBatchDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val firstRow = remember { FocusRequester() }
@@ -456,7 +648,12 @@ private fun BookActionPanel(
         Spacer(Modifier.height(10.dp))
         ActionRow(text = "删除这本书", onClick = onDelete, isDanger = true)
         Spacer(Modifier.height(10.dp))
-        ActionRow(text = "取消", onClick = onDismiss)
+        ActionRow(text = "批量删除", onClick = onBatchDelete, isDanger = true)
+
+        // 【这里刻意不放"取消"项】
+        // 面板本来就能用返回键关闭（ModalPanel 里已经处理了），
+        // 再占一行"取消"只会让用户多按一次方向键，没有实际价值。
+        // 少一个选项 = 少一次按键 = 少一次犹豫。
     }
 }
 

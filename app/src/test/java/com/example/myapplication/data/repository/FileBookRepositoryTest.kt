@@ -278,15 +278,22 @@ class FileBookRepositoryTest {
      * 书架页的排序规则：最近读过的排最前。
      * 这条决定用户打开 App 第一眼看到什么 —— 应该是"继续读"的那本。
      *
-     * 这里 sleep 是为了让时间戳拉开差距。
-     * Windows 上 System.currentTimeMillis() 的精度大约 1~15 毫秒，
-     * 不 sleep 的话两次导入可能拿到相同的时间戳，测试就会变成随机失败（flaky）。
+     * ══ 【这个测试踩过一次坑：时序精度】══════════════════════════════
+     * 第一版只 sleep 了 20ms，结果偶尔会挂（expected 甲 but was 乙）。
+     * 原因是 Windows 上 System.currentTimeMillis() 的精度约 15.6ms：
+     * 如果"乙的导入时间"和"甲的进度时间"落在同一个刻度里，
+     * 两者的排序键就相等，排序结果退化成不稳定。
+     *
+     * 修法：把两次操作之间的间隔拉到明显大于时钟精度。
+     * 【记住这条】任何比较时间戳的测试，都要保证间隔远大于时钟精度，
+     * 否则它会变成一个随机失败的 flaky 测试 —— 那比没有测试更糟。
      */
     @Test
     fun `最近阅读的书排在前面`() {
         val older = importSample("甲.txt")
-        Thread.sleep(20)
+        Thread.sleep(60)
         importSample("乙.txt")                 // 更晚导入，名次本该更靠前
+        Thread.sleep(60)                       // 让下面的 saveProgress 时间戳明显更晚
 
         // 给"甲"记一次阅读进度，它应该反超到第一位
         repo.saveProgress(older.id, chapterIndex = 1, charOffset = 10)

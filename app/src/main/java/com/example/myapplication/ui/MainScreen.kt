@@ -219,6 +219,25 @@ fun MainScreen(container: AppContainer) {
                     reloadBooks()
                 }
             },
+            onDeleteBooks = { ids ->
+                // 批量删除。
+                //
+                // 【只删应用私有书库里的副本，不动投递目录里的源文件】
+                // 用户放的原始 txt 在
+                //   /sdcard/Android/data/<包名>/files/books/
+                // 这里删掉的是
+                //   /data/data/<包名>/files/books/<书 id>/
+                // 两者完全独立。所以误删了书，原始文件还在，重新导入即可。
+                // 这是刻意的设计：阅读器的删除不该有"毁掉用户文件"的风险。
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        ids.forEach { id ->
+                            runCatching { container.bookRepository.deleteBook(id) }
+                        }
+                    }
+                    reloadBooks()
+                }
+            },
         )
 
         Screen.Import -> ImportScreen(
