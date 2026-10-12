@@ -203,6 +203,35 @@ fun BookShelfScreen(
     // 不再依赖几何猜测。
     val firstBookRequester = remember { FocusRequester() }
 
+    // ══ 【面板关闭后的焦点恢复】════════════════════════════════════
+    // 这里解决一个很影响手感的问题：
+    //   滚到书架下面、对某本书按菜单键、再关掉菜单 ——
+    //   焦点会跑到顶部的「批量删除」上，而且之后再按【下】也回不到书本。
+    //
+    // 原因是 ModalPanel 是个全屏遮罩，它消失时焦点【丢了】。
+    // Compose 找不到原来的位置，就把焦点给了第一个可聚焦元素，
+    // 也就是最左边那个「批量删除」。
+    //
+    // 而「按下键回不去」是连带伤害：顶部按钮的 down 指向 firstBookRequester，
+    // 它挂在第 0 本书上 —— 但用户早就滚下去了，第 0 本已被 LazyGrid 回收，
+    // requester 没绑到任何节点，down 就成了死路。
+    //
+    // 修法：把 requester 挂到【当前聚焦的那本书】上（不管它是第几本），
+    // 面板一关就把焦点还回去。这样位置和路径都能保住。
+    // ═══════════════════════════════════════════════════════════════
+    val focusRestoreRequester = remember { FocusRequester() }
+    var hadPanelOpen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(panelOpen) {
+        if (panelOpen) {
+            hadPanelOpen = true
+        } else if (hadPanelOpen) {
+            // 面板刚关闭 —— 把焦点还给之前操作的那本书
+            hadPanelOpen = false
+            focusRestoreRequester.requestFocusWithRetry()
+        }
+    }
+
     ShelfHeader(
                 count = books.size,
                 enabled = !panelOpen,
@@ -245,6 +274,10 @@ fun BookShelfScreen(
                     // 第一本书：按上键回到「导入书籍」
                     firstBookRequester = firstBookRequester,
                     upTarget = importRequester,
+                    // 面板关闭后要把焦点还给"之前操作的那本书"，
+                    // requester 挂在它身上（不管它排第几）
+                    focusRestoreBookId = focusedBook?.id,
+                    focusRestoreRequester = focusRestoreRequester,
                     onOpenBook = onOpenBook,
                     onToggleSelect = { book ->
                         selectedIds = if (book.id in selectedIds) {
@@ -289,7 +322,6 @@ fun BookShelfScreen(
                 onDismiss = { menuBook = null },
             )
         }
-
         // ── 修改书名 ────────────────────────────────────────
         renamingBook?.let { book ->
             RenamePanel(
@@ -338,11 +370,6 @@ private fun ShelfHeader(
     // ══ 进入书架时的初始焦点：固定在「导入书籍」上 ══════════════════
     // 【不管书架里有没有书】。
     //
-    // 原来的写法是"空书架才给导入按钮，有书就给第一张卡片"。
-    // 实测体验很差：冷启动时界面还在拼装，焦点请求经常落空，
-    // 用户面对一个"没有焦点"的界面 —— 按方向键毫无反应，
-    // 只能乱按碰运气，看焦点什么时候冒出来。
-    //
     // 固定给它之后，起点永远是确定的：
     //   · 想读书按一下「下」，焦点进网格
     //   · 想导入直接按确定
@@ -353,10 +380,37 @@ private fun ShelfHeader(
     // 那时目标元素还没把焦点节点注册到窗口的 focus tree 上，
     // 请求会静默失败（不抛异常、不报错，只是没落上）。
     // 所以用 requestFocusWithRetry，它会重试到成功为止。
-    LaunchedEffect(enabled, batchMode) {
+    //
+    // ══ 【key 为什么是 Unit，而不是 enabled / batchMode】══════════
+    // 这里踩过一个很典型的坑：
+    //
+    //   enabled = !panelOpen，而 panelOpen 在"菜单 / 改名 / 删除"
+    //   这些面板打开时变 true、关闭时变 false。于是用户只要开一次
+    //   菜单再关掉，enabled 就经历 false -> true，把这段
+    //   LaunchedEffect 又触发一遍，焦点被从"用户刚才操作的那本书"
+    //   强行拽回顶部的「导入书籍」。
+    //
+    //   更糟的是：如果用户当时已经滚到下面，第 0 本书早就被 LazyGrid
+    //   回收了，那个 focusRequester 没绑到任何节点 —— 之后的「按下键」
+    //   就成了死路，焦点再也回不到书本上。
+    //
+    // 所以 key 必须是 Unit：只在【首次进入书架】时给一次初始焦点。
+    // 面板开关不该动焦点 —— Compose 自己会在面板关闭后把焦点还给原元素。
+    // ═══════════════════════════════════════════════════════════════
+    LaunchedEffect(Unit) {
         if (enabled && !batchMode) {
             importRequester.requestFocusWithRetry()
         }
+    }
+
+    // 只有【从批量模式退回普通模式】时才重新给初始焦点 ——
+    // 那种情况下原来聚焦的卡片可能已经被删掉了，需要一个确定的落点。
+    var prevBatchMode by remember { mutableStateOf(batchMode) }
+    LaunchedEffect(batchMode) {
+        if (prevBatchMode && !batchMode && enabled) {
+            importRequester.requestFocusWithRetry()
+        }
+        prevBatchMode = batchMode
     }
 
     Row(
@@ -495,6 +549,10 @@ private fun BookGrid(
     firstBookRequester: FocusRequester,
     /** 第一本书按【上】键时回到哪（这里是「导入书籍」） */
     upTarget: FocusRequester,
+    /** 面板关闭后要把焦点还给哪本书（通常是用户刚操作的那本） */
+    focusRestoreBookId: String?,
+    /** 挂在上面那本书上，用来恢复焦点 */
+    focusRestoreRequester: FocusRequester,
 ) {
     // 【网格这里刻意不设初始焦点】
     // 进入书架时的焦点统一由 ShelfHeader 固定在「导入书籍」上。
@@ -559,6 +617,18 @@ private fun BookGrid(
                 // 给格子留 8dp 内边距，放大后就仍落在格子内部。
                 // ═══════════════════════════════════════════════════════
                 modifier = Modifier
+                    // ══ 【面板关闭后恢复焦点用】══════════════════════════
+                    // requester 挂在"用户刚操作过的那本书"上，而不是固定第 0 本。
+                    // 因为用户可能已经滚到很下面，第 0 本早被 LazyGrid 回收了，
+                    // 挂在它上面的 requester 会失效（这正是"按上/下都回不去"的原因）。
+                    // ═══════════════════════════════════════════════════════
+                    .then(
+                        if (book.id == focusRestoreBookId) {
+                            Modifier.focusRequester(focusRestoreRequester)
+                        } else {
+                            Modifier
+                        }
+                    )
                     // 第一本书是"从顶部按钮按下键"的落点，
                     // 也是"按上键回顶部"的起点
                     .then(
