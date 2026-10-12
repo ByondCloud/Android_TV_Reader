@@ -106,6 +106,37 @@ fun BookShelfScreen(
     /** 当前有焦点的书。设置键要对它生效 */
     var focusedBook by remember { mutableStateOf<Book?>(null) }
 
+    // ══ 【统一的焦点策略】══════════════════════════════════════════
+    // 这里是整个书架唯一【发起】焦点请求的地方。
+    //
+    // 【为什么要做成统一入口】
+    // 之前焦点逻辑散在三处（进入书架、面板关闭、批量模式切换），
+    // 各自用 LaunchedEffect 抢焦点，结果就是"焦点乱跑"：
+    //   · 关个菜单焦点被拽回顶部
+    //   · 删完一本书焦点不知道去哪
+    //   · 滚到下面之后按键回不来
+    //
+    // 现在改成：任何要动焦点的地方都只【描述目标】，由一个
+    // LaunchedEffect 统一执行。这样"焦点该在哪"始终只有一个答案，
+    // 不会出现两处互相抢。
+    //
+    // 【token 的作用】
+    // LaunchedEffect(key) 只在 key 变化时执行。但有时候目标没变、
+    // 却需要重新请求（比如同一本书的节点被 LazyGrid 回收重建过），
+    // 所以配一个自增的 token 一起当 key，保证每次请求都会执行。
+    // ═══════════════════════════════════════════════════════════════
+    var focusTarget by remember { mutableStateOf<FocusTarget?>(null) }
+    var focusToken by remember { mutableStateOf(0) }
+
+    fun requestFocusOn(target: FocusTarget) {
+        focusTarget = target
+        focusToken++
+    }
+
+    /** 删除后要把焦点交给哪本书（null 表示"全删光了，交给批量删除"） */
+    var pendingFocusBookId by remember { mutableStateOf<String?>(null) }
+    var pendingFocusIsBatch by remember { mutableStateOf(false) }
+
     /** 操作菜单针对的书 */
     var menuBook by remember { mutableStateOf<Book?>(null) }
 
@@ -144,6 +175,8 @@ fun BookShelfScreen(
                 if (batchMode && event.key == Key.Back) {
                     batchMode = false
                     selectedIds = emptySet()
+                    // 退出批量模式后给一个确定的落点，否则焦点会悬空
+                    requestFocusOn(FocusTarget.ImportButton)
                     return@onKeyEvent true
                 }
 
@@ -203,32 +236,65 @@ fun BookShelfScreen(
     // 不再依赖几何猜测。
     val firstBookRequester = remember { FocusRequester() }
 
-    // ══ 【面板关闭后的焦点恢复】════════════════════════════════════
-    // 这里解决一个很影响手感的问题：
-    //   滚到书架下面、对某本书按菜单键、再关掉菜单 ——
-    //   焦点会跑到顶部的「批量删除」上，而且之后再按【下】也回不到书本。
-    //
-    // 原因是 ModalPanel 是个全屏遮罩，它消失时焦点【丢了】。
-    // Compose 找不到原来的位置，就把焦点给了第一个可聚焦元素，
-    // 也就是最左边那个「批量删除」。
-    //
-    // 而「按下键回不去」是连带伤害：顶部按钮的 down 指向 firstBookRequester，
-    // 它挂在第 0 本书上 —— 但用户早就滚下去了，第 0 本已被 LazyGrid 回收，
-    // requester 没绑到任何节点，down 就成了死路。
-    //
-    // 修法：把 requester 挂到【当前聚焦的那本书】上（不管它是第几本），
-    // 面板一关就把焦点还回去。这样位置和路径都能保住。
-    // ═══════════════════════════════════════════════════════════════
-    val focusRestoreRequester = remember { FocusRequester() }
-    var hadPanelOpen by remember { mutableStateOf(false) }
+    /** 挂在"要恢复焦点的那本书"上，配合 focusTarget = Book 使用 */
+    val bookFocusRequester = remember { FocusRequester() }
 
+    // ── 执行焦点请求（整个书架唯一一处）────────────────────
+    LaunchedEffect(focusToken) {
+        when (val t = focusTarget) {
+            FocusTarget.ImportButton -> importRequester.requestFocusWithRetry()
+            FocusTarget.BatchButton -> batchRequester.requestFocusWithRetry()
+            is FocusTarget.Book -> bookFocusRequester.requestFocusWithRetry()
+            null -> Unit
+        }
+    }
+
+    // ── 进入书架：给「导入书籍」一次初始焦点 ────────────────
+    // 【用 Unit 当 key】—— 只在首次组合执行一次。
+    // 之前用 (enabled, batchMode) 当 key，而 enabled = !panelOpen，
+    // 于是每关一次面板就把焦点强行拽回顶部，这是"焦点乱跑"的主因。
+    LaunchedEffect(Unit) {
+        if (!batchMode) {
+            requestFocusOn(FocusTarget.ImportButton)
+        }
+    }
+
+    // ── 面板关闭（没有删除）：把焦点还给原来那本书 ──────────
+    // ModalPanel 是全屏遮罩，消失时焦点会丢，Compose 默认给第一个
+    // 可聚焦元素（也就是「批量删除」）—— 用户就会看到焦点跳上去。
+    // 所以这里主动还回去。
+    //
+    // 【注意"没有删除"这个前提】
+    // 如果面板里执行了删除，那由下面的删除逻辑接管，这里不能抢。
+    var hadPanelOpen by remember { mutableStateOf(false) }
     LaunchedEffect(panelOpen) {
         if (panelOpen) {
             hadPanelOpen = true
         } else if (hadPanelOpen) {
-            // 面板刚关闭 —— 把焦点还给之前操作的那本书
             hadPanelOpen = false
-            focusRestoreRequester.requestFocusWithRetry()
+            if (!pendingFocusIsBatch && pendingFocusBookId == null) {
+                // 没发生删除 —— 回到原处
+                focusedBook?.let { requestFocusOn(FocusTarget.Book(it.id)) }
+            }
+        }
+    }
+
+    // ── 删除完成：按规则决定焦点去哪 ────────────────────────
+    // 规则（用户定的）：
+    //   · 删除位置前面还有书 -> 焦点放到前面那本
+    //   · 否则（删的是第一本，或全删光了）-> 焦点放到「批量删除」
+    //
+    // 【为什么要等 books 变化再执行】
+    // 删除是异步的（写磁盘），设置焦点时新的列表还没到。
+    // requester 必须绑在"确实存在的那本书"上，所以等列表更新后再请求。
+    LaunchedEffect(books) {
+        if (pendingFocusIsBatch) {
+            pendingFocusIsBatch = false
+            requestFocusOn(FocusTarget.BatchButton)
+        } else {
+            val id = pendingFocusBookId ?: return@LaunchedEffect
+            pendingFocusBookId = null
+            requestFocusOn(FocusTarget.Book(id))
         }
     }
 
@@ -244,15 +310,47 @@ fun BookShelfScreen(
                     if (batchMode) {
                         // 已经是批量模式 → 这个按钮就是"执行删除"
                         if (selectedIds.isNotEmpty()) {
-                            val ids = selectedIds.toList()
+                            val ids = selectedIds.toSet()
+
+                            // ══ 【按规则决定删除后的焦点落点】══════════════
+                            // 规则：删除位置前面还有书 -> 焦点放前面那本；
+                            //       否则 -> 焦点放「批量删除」。
+                            //
+                            // 【为什么要在这算，而不是等 books 更新后算】
+                            // 删除后列表里已经没有被删的书了，也就无法判断
+                            // "它前面还有没有书"。所以趁列表还在先算好。
+                            //
+                            // 【为什么要 lastOrNull { 它没被删 }】
+                            // 批量删除可能一次删掉连续好几本，
+                            // 简单地取 index-1 有可能取到"也在删除名单里"的那本。
+                            // ═══════════════════════════════════════════════
+                            val firstDeletedIdx = books.indexOfFirst { it.id in ids }
+                            val prevBook = if (firstDeletedIdx > 0) {
+                                books.take(firstDeletedIdx).lastOrNull { it.id !in ids }
+                            } else {
+                                null
+                            }
+                            pendingFocusIsBatch = prevBook == null
+                            pendingFocusBookId = prevBook?.id
+
                             batchMode = false
                             selectedIds = emptySet()
-                            onDeleteBooks(ids)
+                            onDeleteBooks(ids.toList())
                         }
                     } else {
-                        // 普通模式 → 进入批量勾选
+                        // 普通模式 → 进入批量勾选。
+                        //
+                        // 【焦点为什么给书本，而不是「批量删除」】
+                        // 批量模式下「确定键」的语义变成了"勾选/取消勾选"，
+                        // 所以焦点应该落在书本上，用户接着就能挑。
+                        //
+                        // 而且这时「批量删除」是【禁用】的
+                        // （enabled = selectedCount > 0，刚开始一本没选），
+                        // 禁用的元素拿不到焦点 —— 请求它只会静默失败，
+                        // 焦点反而会掉到别处。
                         selectedIds = emptySet()
                         batchMode = true
+                        focusedBook?.let { requestFocusOn(FocusTarget.Book(it.id)) }
                     }
                 },
                 importRequester = importRequester,
@@ -274,10 +372,10 @@ fun BookShelfScreen(
                     // 第一本书：按上键回到「导入书籍」
                     firstBookRequester = firstBookRequester,
                     upTarget = importRequester,
-                    // 面板关闭后要把焦点还给"之前操作的那本书"，
-                    // requester 挂在它身上（不管它排第几）
-                    focusRestoreBookId = focusedBook?.id,
-                    focusRestoreRequester = focusRestoreRequester,
+                    // requester 挂在"当前焦点目标所指的那本书"上，
+                    // 用于面板关闭后恢复焦点、以及删除后定位到前一本书
+                    focusBookId = (focusTarget as? FocusTarget.Book)?.id,
+                    bookFocusRequester = bookFocusRequester,
                     onOpenBook = onOpenBook,
                     onToggleSelect = { book ->
                         selectedIds = if (book.id in selectedIds) {
@@ -318,6 +416,9 @@ fun BookShelfScreen(
                     menuBook = null
                     selectedIds = emptySet()
                     batchMode = true
+                    // 同上：批量模式下的落点是书本（确定键在那里是勾选），
+                    // 而「批量删除」此刻是禁用状态、接不了焦点
+                    focusedBook?.let { requestFocusOn(FocusTarget.Book(it.id)) }
                 },
                 onDismiss = { menuBook = null },
             )
@@ -339,6 +440,23 @@ fun BookShelfScreen(
             DeleteConfirmPanel(
                 book = book,
                 onConfirm = {
+                    // ══ 【在删除【之前】就决定好焦点落点】════════════════
+                    // 规则（用户定的）：
+                    //   · 被删位置前面还有书 -> 焦点放到前面那本
+                    //   · 否则                -> 焦点放到「批量删除」
+                    //
+                    // 【为什么要在删除前算】
+                    // 删除后 books 会变，那时再按 id 找位置就已经找不到
+                    // 被删的那本了，也就无法判断"前面还有没有书"。
+                    // 所以趁列表还在，先把落点算出来存着，
+                    // 等 books 更新后由 LaunchedEffect(books) 执行。
+                    // ═══════════════════════════════════════════════════
+                    val idx = books.indexOfFirst { it.id == book.id }
+                    val prev = if (idx > 0) books.getOrNull(idx - 1) else null
+
+                    pendingFocusIsBatch = prev == null
+                    pendingFocusBookId = prev?.id
+
                     onDeleteBook(book)
                     deletingBook = null
                 },
@@ -346,6 +464,35 @@ fun BookShelfScreen(
             )
         }
     }
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  书架的焦点目标
+// ══════════════════════════════════════════════════════════════════
+
+/**
+ * 焦点应该落在哪。
+ *
+ * 【为什么要有这个东西】
+ * 之前焦点请求散在好几个地方（进入书架、面板关闭、批量模式切换、
+ * 删除完成），各自用 LaunchedEffect 抢焦点。谁最后执行谁说了算，
+ * 于是用户看到的就是"焦点乱跑"：
+ *   · 关个菜单焦点被拽回顶部
+ *   · 删完一本书焦点不知道去哪
+ *   · 滚到下面之后按方向键回不来
+ *
+ * 现在所有要动焦点的地方都只【描述目标】，由 BookShelfScreen 里
+ * 唯一一处 LaunchedEffect 执行。这样"焦点该在哪"始终只有一个答案。
+ */
+private sealed interface FocusTarget {
+    /** 顶部的「导入书籍」—— 进入书架、退出批量模式时的落点 */
+    data object ImportButton : FocusTarget
+
+    /** 顶部的「批量删除」—— 删除后前面没有书时的落点 */
+    data object BatchButton : FocusTarget
+
+    /** 某一本书 —— 面板关闭后恢复、删除后落到前一本书 */
+    data class Book(val id: String) : FocusTarget
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -367,51 +514,17 @@ private fun ShelfHeader(
     /** 按【下】键时应该跳到哪个元素（这里是第一本书） */
     downTarget: FocusRequester,
 ) {
-    // ══ 进入书架时的初始焦点：固定在「导入书籍」上 ══════════════════
-    // 【不管书架里有没有书】。
+    // ══ 【这个组件不再管焦点】══════════════════════════════════════
+    // 这里原来有一段 LaunchedEffect 负责"进入书架时把焦点给「导入书籍」"，
+    // 还有个 prevBatchMode 跟踪"从批量模式退回来时给焦点"。
     //
-    // 固定给它之后，起点永远是确定的：
-    //   · 想读书按一下「下」，焦点进网格
-    //   · 想导入直接按确定
-    // 「可预测」比「省一次按键」重要得多。
+    // 它们都被移到了 BookShelfScreen 的【统一焦点入口】——
+    // 因为焦点逻辑散在多处正是"焦点乱跑"的根源：
+    // 这里请求一次、那里又请求一次，谁最后执行谁说了算。
     //
-    // 【为什么不能只调一次 requestFocus】
-    // LaunchedEffect 在第一帧【布局挂载完成之前】就会执行，
-    // 那时目标元素还没把焦点节点注册到窗口的 focus tree 上，
-    // 请求会静默失败（不抛异常、不报错，只是没落上）。
-    // 所以用 requestFocusWithRetry，它会重试到成功为止。
-    //
-    // ══ 【key 为什么是 Unit，而不是 enabled / batchMode】══════════
-    // 这里踩过一个很典型的坑：
-    //
-    //   enabled = !panelOpen，而 panelOpen 在"菜单 / 改名 / 删除"
-    //   这些面板打开时变 true、关闭时变 false。于是用户只要开一次
-    //   菜单再关掉，enabled 就经历 false -> true，把这段
-    //   LaunchedEffect 又触发一遍，焦点被从"用户刚才操作的那本书"
-    //   强行拽回顶部的「导入书籍」。
-    //
-    //   更糟的是：如果用户当时已经滚到下面，第 0 本书早就被 LazyGrid
-    //   回收了，那个 focusRequester 没绑到任何节点 —— 之后的「按下键」
-    //   就成了死路，焦点再也回不到书本上。
-    //
-    // 所以 key 必须是 Unit：只在【首次进入书架】时给一次初始焦点。
-    // 面板开关不该动焦点 —— Compose 自己会在面板关闭后把焦点还给原元素。
+    // 现在这个组件只负责"把按钮画出来 + 把 requester 挂上去"，
+    // 什么时候给焦点由上层统一决定。
     // ═══════════════════════════════════════════════════════════════
-    LaunchedEffect(Unit) {
-        if (enabled && !batchMode) {
-            importRequester.requestFocusWithRetry()
-        }
-    }
-
-    // 只有【从批量模式退回普通模式】时才重新给初始焦点 ——
-    // 那种情况下原来聚焦的卡片可能已经被删掉了，需要一个确定的落点。
-    var prevBatchMode by remember { mutableStateOf(batchMode) }
-    LaunchedEffect(batchMode) {
-        if (prevBatchMode && !batchMode && enabled) {
-            importRequester.requestFocusWithRetry()
-        }
-        prevBatchMode = batchMode
-    }
 
     Row(
         modifier = Modifier
@@ -549,10 +662,10 @@ private fun BookGrid(
     firstBookRequester: FocusRequester,
     /** 第一本书按【上】键时回到哪（这里是「导入书籍」） */
     upTarget: FocusRequester,
-    /** 面板关闭后要把焦点还给哪本书（通常是用户刚操作的那本） */
-    focusRestoreBookId: String?,
+    /** 面板关闭后要把焦点还给哪本书（由统一的焦点目标决定） */
+    focusBookId: String?,
     /** 挂在上面那本书上，用来恢复焦点 */
-    focusRestoreRequester: FocusRequester,
+    bookFocusRequester: FocusRequester,
 ) {
     // 【网格这里刻意不设初始焦点】
     // 进入书架时的焦点统一由 ShelfHeader 固定在「导入书籍」上。
@@ -623,8 +736,8 @@ private fun BookGrid(
                     // 挂在它上面的 requester 会失效（这正是"按上/下都回不去"的原因）。
                     // ═══════════════════════════════════════════════════════
                     .then(
-                        if (book.id == focusRestoreBookId) {
-                            Modifier.focusRequester(focusRestoreRequester)
+                        if (book.id == focusBookId) {
+                            Modifier.focusRequester(bookFocusRequester)
                         } else {
                             Modifier
                         }
