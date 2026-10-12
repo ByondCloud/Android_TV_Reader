@@ -2,13 +2,7 @@ package com.example.myapplication.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,15 +14,17 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import com.example.myapplication.data.AppContainer
 import com.example.myapplication.domain.model.Book
+import com.example.myapplication.domain.model.ParsedChapter
+import com.example.myapplication.domain.reader.ReaderSettings
 import com.example.myapplication.domain.source.SourceFile
 import com.example.myapplication.domain.usecase.ImportResult
-import com.example.myapplication.ui.components.TvButton
 import com.example.myapplication.ui.importer.ImportScreen
+import com.example.myapplication.ui.reader.ReaderScreen
 import com.example.myapplication.ui.shelf.BookShelfScreen
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -36,50 +32,44 @@ import kotlinx.coroutines.withContext
  * 应用里的三个页面。
  *
  * 【为什么用 sealed interface 而不是 enum】
- * 因为 Reader 需要带数据（书名、书 id），而 enum 的每个常量不能带不同的参数集。
+ * 因为 Reader 需要带数据（书 id、书名），而 enum 的每个常量不能带不同的参数集。
  * sealed interface 既能表达"就这几种"，又能让每种带自己的数据。
- *
- * 【为什么不用 Navigation Compose 库】
- * 现在只有 3 个页面、层级只有一层。手写一个 when 分支完全够用，
- * 而且你能一眼看清"页面之间怎么跳"。
- * 等页面多到需要深链接、返回栈、转场动画时，再上导航库。
- * ═══════════════════════════════════════════════════════════════
  */
 private sealed interface Screen {
-    /** 书架（首页） */
     data object Shelf : Screen
-
-    /** 导入页 */
     data object Import : Screen
-
-    /** 阅读页。模块 5 会把 ReaderPlaceholder 换成真正的阅读器 */
-    data class Reader(val bookId: String, val title: String) : Screen
+    data class Reader(val bookId: String) : Screen
 }
+
+/** 打开一本书所需要的全部内容 */
+private data class ReaderContent(
+    val book: Book,
+    val text: String,
+    val chapters: List<ParsedChapter>,
+)
+
+/** 待写入的阅读进度快照 */
+private data class ProgressSnapshot(
+    val bookId: String,
+    val chapterIndex: Int,
+    val charOffset: Int,
+)
 
 /**
  * 主界面 —— 整个 App 唯一持有"界面状态"的地方。
  *
- * ══ 它承担了本该由 ViewModel 承担的三件事 ══════════════════════
- *   1. 页面切换（screen）
- *   2. 加载数据（books / files）
- *   3. 执行用户操作（导入）并把结果反映到界面
+ * 它承担了本该由 ViewModel 承担的三件事：
+ *   1. 页面切换
+ *   2. 加载数据
+ *   3. 执行用户操作并把结果反映到界面
  *
- * 【为什么现在不用 ViewModel】
- * ViewModel 要额外引入 lifecycle-viewmodel-compose 依赖，而它主要解决
- * 两个问题：屏幕旋转时保住状态、把数据和生命周期绑在一起。
- * 电视不会旋转，页面也简单，所以先用手写的 remember 状态。
- * 模块 7 会引入 ViewModel，那时你能直观对比出它解决了什么问题 ——
- * 比一上来就用框架、却不知道为什么用要好。
+ * 【线程纪律】所有磁盘操作都在 Dispatchers.IO 上。
+ * LaunchedEffect / rememberCoroutineScope 拿到的协程跑在【主线程】，
+ * 而读文件、写文件、解析文本都是阻塞操作，直接在主线程做会卡界面
+ * （电视上表现为按键延迟一两秒才响应）。
  *
- * ══ 线程：所有磁盘操作都在 IO 线程 ═════════════════════════════
- * LaunchedEffect 和 rememberCoroutineScope 拿到的协程跑在【主线程】。
- * 而读文件、写文件、解析文本都是阻塞操作，直接在主线程做会卡住界面
- * （电视上表现为遥控器按键延迟一两秒才响应，体验极差）。
- *
- * 所以每一处 IO 都用 withContext(Dispatchers.IO) 包起来 ——
  * 这也正是我们把 BookParser / BookRepository 设计成阻塞式的原因：
- * **它们不关心线程，线程由调用方决定**，这里就是那个调用方。
- * ═══════════════════════════════════════════════════════════════
+ * 它们不关心线程，线程由调用方决定 —— 这里就是那个调用方。
  */
 @Composable
 fun MainScreen(container: AppContainer) {
@@ -94,6 +84,15 @@ fun MainScreen(container: AppContainer) {
     var files by remember { mutableStateOf<List<SourceFile>?>(null) }
     var isImporting by remember { mutableStateOf(false) }
     var lastResults by remember { mutableStateOf<List<ImportResult>?>(null) }
+
+    // ── 阅读相关状态 ────────────────────────────────────────
+    var readerSettings by remember { mutableStateOf(ReaderSettings()) }
+
+    /** 打开中的书。null 表示还在加载 */
+    var readerContent by remember { mutableStateOf<ReaderContent?>(null) }
+
+    /** 最新的阅读位置（还没落盘）。用 debounce 方式写入，避免翻页时每页都写磁盘 */
+    var liveProgress by remember { mutableStateOf<ProgressSnapshot?>(null) }
 
     val scope = rememberCoroutineScope()
 
@@ -110,14 +109,13 @@ fun MainScreen(container: AppContainer) {
     }
 
     fun startImport(list: List<SourceFile>) {
-        // 空列表直接返回；导入中重复点击也忽略（防止并发写同一个目录）
         if (list.isEmpty() || isImporting) return
         isImporting = true
         lastResults = null
         scope.launch {
             val results = withContext(Dispatchers.IO) { container.bookImporter.importAll(list) }
             lastResults = results
-            reloadBooks()          // 导入完刷新书架，用户能立刻看到新书
+            reloadBooks()
             isImporting = false
         }
     }
@@ -129,10 +127,34 @@ fun MainScreen(container: AppContainer) {
         isLoading = false
     }
 
-    // ── 遥控器返回键 ────────────────────────────────────────
-    // 在书架页按返回键应该退出 App（交给系统处理），
-    // 在子页面按返回键应该回到书架。
-    BackHandler(enabled = screen !is Screen.Shelf) {
+    // ══ 阅读进度的防抖落盘 ══════════════════════════════════
+    // 【为什么需要防抖】
+    // 用户快速连按翻页键时，位置每几百毫秒就变一次。
+    // 如果每次变化都立刻写磁盘，一次连续翻页会产生几十次 IO ——
+    // 既浪费电（电视盒子是 24 小时开着的设备），也会让界面卡顿。
+    //
+    // LaunchedEffect(key) 的语义正好就是防抖：
+    // key 变化时【自动取消上一次的协程】，所以 delay 期间又来了新变化，
+    // 旧的这次就不会执行到写盘那一步。
+    LaunchedEffect(liveProgress) {
+        val snapshot = liveProgress ?: return@LaunchedEffect
+        delay(800)
+        withContext(Dispatchers.IO) {
+            runCatching {
+                container.bookRepository.saveProgress(
+                    snapshot.bookId, snapshot.chapterIndex, snapshot.charOffset
+                )
+            }
+        }
+    }
+
+    // ══ 遥控器返回键 ════════════════════════════════════════
+    // 【注意这里为什么只处理导入页】
+    // 阅读页需要按键做翻页，所以它的返回键是在 ReaderScreen 内部用
+    // onKeyEvent 处理的。如果这里也开一个 BackHandler，按一次返回键
+    // 可能同时触发两处逻辑，导致"越过书架直接退出 App"这种诡异行为。
+    // 一个返回键，只能有一个负责人。
+    BackHandler(enabled = screen is Screen.Import) {
         screen = Screen.Shelf
     }
 
@@ -143,7 +165,10 @@ fun MainScreen(container: AppContainer) {
             books = books,
             isLoading = isLoading,
             emptyHint = "书架还是空的。\n点右上角「导入书籍」开始。",
-            onOpenBook = { book -> screen = Screen.Reader(book.id, book.title) },
+            onOpenBook = { book ->
+                readerContent = null
+                screen = Screen.Reader(book.id)
+            },
             onImportClick = {
                 screen = Screen.Import
                 lastResults = null
@@ -162,51 +187,74 @@ fun MainScreen(container: AppContainer) {
             onBack = { screen = Screen.Shelf },
         )
 
-        is Screen.Reader -> ReaderPlaceholder(
-            title = current.title,
-            onBack = { screen = Screen.Shelf },
-        )
+        is Screen.Reader -> {
+            // 打开书：读正文 + 切章节
+            LaunchedEffect(current.bookId) {
+                readerContent = withContext(Dispatchers.IO) {
+                    val book = container.bookRepository.findBook(current.bookId)
+                        ?: return@withContext null
+                    val text = runCatching { container.bookRepository.loadText(current.bookId) }
+                        .getOrDefault("")
+                    val chapters = runCatching { container.bookRepository.loadChapters(current.bookId) }
+                        .getOrDefault(emptyList())
+                    ReaderContent(book = book, text = text, chapters = chapters)
+                }
+            }
+
+            val content = readerContent
+            if (content == null) {
+                LoadingScreen("正在打开《${current.bookId}》…")
+            } else {
+                ReaderScreen(
+                    book = content.book,
+                    text = content.text,
+                    chapters = content.chapters,
+                    // 有进度就从进度开始，没读过就从第一章开头
+                    initialProgress = content.book.progress,
+                    settings = readerSettings,
+                    onProgressChange = { chapterIndex, charOffset ->
+                        // 只更新内存里的快照，真正的写盘交给上面的防抖逻辑
+                        liveProgress = ProgressSnapshot(content.book.id, chapterIndex, charOffset)
+                    },
+                    onToggleMode = {
+                        readerSettings = readerSettings.copy(mode = readerSettings.mode.toggled())
+                    },
+                    onBack = {
+                        // 【退出时立即写一次】防抖窗口是 800ms，
+                        // 如果用户翻完最后一页立刻退出，那次防抖可能还没执行。
+                        // 这里补一刀，保证进度一定被保存。
+                        val snapshot = liveProgress
+                        scope.launch {
+                            if (snapshot != null) {
+                                withContext(Dispatchers.IO) {
+                                    runCatching {
+                                        container.bookRepository.saveProgress(
+                                            snapshot.bookId, snapshot.chapterIndex, snapshot.charOffset
+                                        )
+                                    }
+                                }
+                            }
+                            reloadBooks()      // 刷新书架上"续读 · 第 N 章"的显示
+                        }
+                        readerContent = null
+                        screen = Screen.Shelf
+                    },
+                )
+            }
+        }
     }
 }
 
-/**
- * 阅读页的临时占位。
- *
- * 存在的意义：让"点击一本书"有【明确反馈】。
- * 如果什么都不发生，用户会以为界面坏了 ——
- * 这种"沉默的失败"比报错还糟糕，因为它不告诉你哪里有问题。
- *
- * 模块 5 会把它换成真正的翻页阅读器。
- */
 @Composable
-private fun ReaderPlaceholder(title: String, onBack: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "《$title》",
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.weight(1f))
-            TvButton(text = "返回书架", onClick = onBack)
-        }
-
-        Spacer(Modifier.height(24.dp))
-
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = "阅读器还没做。\n\n模块 5 实现「翻页」，模块 6 实现「上下连续阅读」。",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.secondary,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                modifier = Modifier.width(600.dp),
-            )
-        }
+private fun LoadingScreen(text: String) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.secondary,
+        )
     }
 }
