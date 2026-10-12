@@ -91,7 +91,21 @@ fun Modifier.tvFocusable(
     val interactionSource = remember { MutableInteractionSource() }
 
     return this
-        .scale(if (isFocused) focusedScale else 1f)
+        // ══ 【Modifier 顺序在这里至关重要】══════════════════════════
+        // 原来的顺序是 scale 在最前面：
+        //     .scale(...)          <- 创建离屏图形层
+        //     .clip(shape)
+        //     .background(...)     <- 被画进图层内部
+        //     .border(...)         <- 被画进图层内部
+        //
+        // scale 的底层是 graphicsLayer，它会开一个离屏图层并把内容缓存起来。
+        // 在这台电视上实测的后果是：焦点变化时【缩放生效了、颜色却没更新】——
+        // 书本卡片获得焦点后，焦点框根本画不出来（顶部按钮因为结构不同没暴露这问题）。
+        //
+        // 把 scale 挪到最后，让 background / border 位于图层【外侧】，
+        // 它们的颜色变化就走上正常的重绘路径，不会再被图层缓存挡住；
+        // 而 scale 只负责把已经画好的内容整体放大，视觉结果不变。
+        // ═══════════════════════════════════════════════════════════
         .clip(shape)
         .background(
             if (isFocused) {
@@ -109,7 +123,15 @@ fun Modifier.tvFocusable(
             },
             shape = shape,
         )
-        .onFocusChanged { isFocused = it.isFocused }
+        // ★ 缩放放在最后：它对上面已经绘制好的背景和边框整体生效
+        .scale(if (isFocused) focusedScale else 1f)
+        .onFocusChanged { state ->
+            isFocused = state.isFocused
+            android.util.Log.d(
+                "FOCUSDBG",
+                "tvFocusable: isFocused=${state.isFocused} hasFocus=${state.hasFocus}"
+            )
+        }
         .clickable(
             enabled = enabled,
             interactionSource = interactionSource,

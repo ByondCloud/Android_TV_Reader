@@ -500,42 +500,92 @@ private fun BookGrid(
     // 进入书架时的焦点统一由 ShelfHeader 固定在「导入书籍」上。
     // 两处都抢的结果是启动瞬间焦点来回跳，最终谁也拿不到 ——
     // 那正是"开屏没有焦点"的成因之一。
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(3),
-        horizontalArrangement = Arrangement.spacedBy(20.dp),
+    // ══ 【为什么不用 LazyVerticalGrid】══════════════════════════════
+    // 这是一个用性能和实测换来的决定。
+    //
+    // 这台小米电视（澎湃 OS 3）上实测到一个现象：
+    // 书本卡片获得焦点后，scale(1.05f) 生效了（bounds 从
+    // [112,246][630,510] 变成 [99,239][643,517]），
+    // 但 background / border 的颜色【不更新】—— 焦点框画不出来。
+    // 而同样用 tvFocusable 的顶部按钮一切正常。
+    //
+    // 区别就在于书卡在 LazyVerticalGrid 的 item 里：
+    //   · scale 是 GPU 图层变换，不需要重新绘制 → 生效
+    //   · background/border 变色需要 CPU 重新绘制 → 被跳过
+    // 结果是"焦点其实移动了，但用户看不见焦点在哪"。
+    //
+    // 对电视应用来说这是致命的 —— 屏幕上任何时刻都必须能看出焦点在哪。
+    //
+    // 所以改成普通的 Column + Row 全量布局。
+    // 代价是失去懒加载（书多时首次组合更慢），但：
+    //   · 书架上通常就几十本，全量组合没有问题
+    //   · 焦点可见性是电视应用的【第一原则】，不能用它换性能
+    //   · 真要优化，将来该做的是分页加载，而不是回到 LazyGrid
+    // ═══════════════════════════════════════════════════════════════
+    Column(
+        modifier = Modifier
+            .fillMaxSize(),
+        // 【刻意不加 verticalScroll】
+        // 实测：这台电视上任何"可滚动容器"（verticalScroll / LazyVerticalGrid）
+        // 内部的焦点视觉都不会重绘 —— 焦点框画不出来。
+        // 对电视应用来说焦点可见性是第一原则，所以宁可先牺牲滚动。
+        //
+        // 书太多放不下时，正确的方向是做【分页】而不是套滚动容器。
         verticalArrangement = Arrangement.spacedBy(20.dp),
-        modifier = Modifier.fillMaxSize(),
     ) {
-        itemsIndexed(books, key = { _, book -> book.id }) { index, book ->
-            BookCard(
-                book = book,
-                enabled = enabled,
-                batchMode = batchMode,
-                selected = book.id in selectedIds,
-                // 批量模式下"确定键"变成"勾选/取消勾选"，而不是打开这本书
-                onClick = { if (batchMode) onToggleSelect(book) else onOpenBook(book) },
-                onFocus = { onFocusBook(book) },
-                // ══ 【这个 padding 是给"聚焦放大"留空间的】══════════════
-                // 聚焦时卡片会 scale(1.05f) 放大，而这是【绘制变换】，
-                // 不参与布局测量 —— 也就是说放大后的部分会超出格子边界。
-                // 网格会把它裁掉，表现就是"黄色焦点框的顶部被上面的内容切掉了"。
-                //
-                // 给格子留 8dp 内边距，放大后（水平约 7.6dp、垂直约 3.3dp）
-                // 就仍然落在格子内部，不会被裁。
-                // ═══════════════════════════════════════════════════════
-                modifier = Modifier
-                    // 第一本书是"从顶部按钮按下键"的落点，也是"按上键回顶部"的起点
-                    .then(
-                        if (index == 0) {
-                            Modifier
-                                .focusRequester(firstBookRequester)
-                                .focusProperties { up = upTarget }
-                        } else {
-                            Modifier
-                        }
-                    )
-                    .padding(8.dp),
-            )
+        // 每 3 个一组，铺成一行
+        books.chunked(3).forEachIndexed { rowIndex, rowBooks ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
+            ) {
+                rowBooks.forEachIndexed { colIndex, book ->
+                    val index = rowIndex * 3 + colIndex
+                    // ══ 【为什么 weight 加在这个 Box 上，而不是 BookCard 上】══
+                    // BookCard 内部是个 Column，而 Column 的 weight 是【纵向】的。
+                    // 如果直接把 weight(1f) 传给 BookCard，它会落到 Column 的
+                    // 作用域里，结果是卡片被【垂直拉满】（实测就是这样）。
+                    //
+                    // 用一个 Row 作用域下的 Box 来承接 weight，负责"占三分之一的宽"，
+                    // BookCard 只负责填满这个 Box。职责分开，就不会串作用域。
+                    // ═══════════════════════════════════════════════════════
+                    Box(modifier = Modifier.weight(1f)) {
+                        BookCard(
+                            book = book,
+                            enabled = enabled,
+                            batchMode = batchMode,
+                            selected = book.id in selectedIds,
+                            // 批量模式下"确定键"变成"勾选/取消勾选"，而不是打开这本书
+                            onClick = {
+                                if (batchMode) onToggleSelect(book) else onOpenBook(book)
+                            },
+                            onFocus = { onFocusBook(book) },
+                            // ══ 【这个 padding 是给"聚焦放大"留空间的】══════
+                            // 聚焦时卡片会 scale(1.05f) 放大，而这是绘制变换，
+                            // 不参与布局测量 —— 放大后的部分会超出格子边界被裁。
+                            // 给每张卡片留 8dp 内边距，放大后就仍落在格子内部。
+                            // ═══════════════════════════════════════════════
+                            modifier = Modifier
+                                // 第一本书是"从顶部按钮按下键"的落点，
+                                // 也是"按上键回顶部"的起点
+                                .then(
+                                    if (index == 0) {
+                                        Modifier
+                                            .focusRequester(firstBookRequester)
+                                            .focusProperties { up = upTarget }
+                                    } else {
+                                        Modifier
+                                    }
+                                )
+                                .padding(8.dp),
+                        )
+                    }
+                }
+                // 这一行不足 3 个时，补空白占位，保证卡片宽度一致
+                repeat(3 - rowBooks.size) {
+                    Spacer(Modifier.weight(1f))
+                }
+            }
         }
     }
 }
@@ -595,8 +645,11 @@ private fun BookCard(
                 overflow = TextOverflow.Ellipsis,
             )
 
-            // weight(1f) 吃掉剩余空间，把下面这行进度推到卡片底部
-            Spacer(Modifier.weight(1f))
+            // weight(1f) 本来是想把下面这行进度推到卡片底部，
+            // 但 Column 高度不确定时，weight 会去撑满父级的可用空间 ——
+            // 结果是卡片被拉得极高（实测约 700px）。
+            // 改成固定间距，卡片高度回到"内容高度"，再由网格约束统一。
+            Spacer(Modifier.height(18.dp))
 
             Text(
                 text = if (book.progress.isStarted) {
