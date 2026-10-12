@@ -187,7 +187,23 @@ fun BookShelfScreen(
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
 
-            ShelfHeader(
+            // ══ 焦点导航的"接点" ═══════════════════════════════════════════
+    // 【为什么需要显式指定】Compose 的焦点搜索是【按几何位置】猜的：
+    // 按下键时它会找"在下方、且水平方向重叠最多"的元素。
+    //
+    // 但我们的布局恰好让它猜不到：
+    //     顶部按钮 y≈70~174，三个都在屏幕【右侧】(x≥1194)
+    //     书本卡片 y≈239~517，两本都在屏幕【左侧】(x≤1232)
+    // 从「导入书籍」(x=1436~1681) 往下看，没有任何水平重叠的目标 ——
+    // 于是按下键就"跳不过去"，用户感觉方向键失灵。
+    //
+    // 所以这里用 focusProperties 把关系【写死】：
+    //     顶部按钮 按下 -> 第一本书
+    //     第一本书 按上 -> 「导入书籍」
+    // 不再依赖几何猜测。
+    val firstBookRequester = remember { FocusRequester() }
+
+    ShelfHeader(
                 count = books.size,
                 enabled = !panelOpen,
                 batchMode = batchMode,
@@ -212,6 +228,8 @@ fun BookShelfScreen(
                 },
                 importRequester = importRequester,
                 batchRequester = batchRequester,
+                // 顶部三个按钮按下键，统一跳到第一本书
+                downTarget = firstBookRequester,
             )
 
             Spacer(Modifier.height(20.dp))
@@ -224,6 +242,9 @@ fun BookShelfScreen(
                     enabled = !panelOpen,
                     batchMode = batchMode,
                     selectedIds = selectedIds,
+                    // 第一本书：按上键回到「导入书籍」
+                    firstBookRequester = firstBookRequester,
+                    upTarget = importRequester,
                     onOpenBook = onOpenBook,
                     onToggleSelect = { book ->
                         selectedIds = if (book.id in selectedIds) {
@@ -311,6 +332,8 @@ private fun ShelfHeader(
     onToggleTheme: () -> Unit,
     importRequester: FocusRequester,
     batchRequester: FocusRequester,
+    /** 按【下】键时应该跳到哪个元素（这里是第一本书） */
+    downTarget: FocusRequester,
 ) {
     // ══ 进入书架时的初始焦点：固定在「导入书籍」上 ══════════════════
     // 【不管书架里有没有书】。
@@ -379,7 +402,10 @@ private fun ShelfHeader(
             text = if (batchMode) "删除选中的 $selectedCount 本" else "批量删除",
             onClick = onBatchClick,
             enabled = enabled && if (batchMode) selectedCount > 0 else count > 0,
-            modifier = Modifier.focusRequester(batchRequester),
+            modifier = Modifier
+                .focusRequester(batchRequester)
+                // 按下键 → 第一本书（几何搜索找不到，所以显式指定）
+                .focusProperties { down = downTarget },
         )
 
         Spacer(Modifier.width(12.dp))
@@ -388,7 +414,9 @@ private fun ShelfHeader(
             text = "导入书籍",
             onClick = onImportClick,
             enabled = enabled,
-            modifier = Modifier.focusRequester(importRequester),
+            modifier = Modifier
+                .focusRequester(importRequester)
+                .focusProperties { down = downTarget },
         )
 
         Spacer(Modifier.width(12.dp))
@@ -398,6 +426,8 @@ private fun ShelfHeader(
             theme = theme,
             enabled = enabled,
             onClick = onToggleTheme,
+            // 这个圆形按钮也一样：往下要能进网格
+            modifier = Modifier.focusProperties { down = downTarget },
         )
     }
 }
@@ -461,6 +491,10 @@ private fun BookGrid(
     onOpenBook: (Book) -> Unit,
     onToggleSelect: (Book) -> Unit,
     onFocusBook: (Book) -> Unit,
+    /** 挂在第一本书上，作为"顶部按钮按下键"的落点 */
+    firstBookRequester: FocusRequester,
+    /** 第一本书按【上】键时回到哪（这里是「导入书籍」） */
+    upTarget: FocusRequester,
 ) {
     // 【网格这里刻意不设初始焦点】
     // 进入书架时的焦点统一由 ShelfHeader 固定在「导入书籍」上。
@@ -472,7 +506,7 @@ private fun BookGrid(
         verticalArrangement = Arrangement.spacedBy(20.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
-        itemsIndexed(books, key = { _, book -> book.id }) { _, book ->
+        itemsIndexed(books, key = { _, book -> book.id }) { index, book ->
             BookCard(
                 book = book,
                 enabled = enabled,
@@ -489,7 +523,18 @@ private fun BookGrid(
                 // 给格子留 8dp 内边距，放大后（水平约 7.6dp、垂直约 3.3dp）
                 // 就仍然落在格子内部，不会被裁。
                 // ═══════════════════════════════════════════════════════
-                modifier = Modifier.padding(8.dp),
+                modifier = Modifier
+                    // 第一本书是"从顶部按钮按下键"的落点，也是"按上键回顶部"的起点
+                    .then(
+                        if (index == 0) {
+                            Modifier
+                                .focusRequester(firstBookRequester)
+                                .focusProperties { up = upTarget }
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .padding(8.dp),
             )
         }
     }

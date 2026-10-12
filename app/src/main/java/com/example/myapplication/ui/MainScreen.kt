@@ -1,6 +1,7 @@
 package com.example.myapplication.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -113,9 +114,20 @@ fun MainScreen(container: AppContainer) {
     //                     白天模式下就会出现一条黑边。
     // ═══════════════════════════════════════════════════════════════
     MyApplicationTheme(darkTheme = readerSettings.theme == ReaderTheme.Night) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background,
+        // ══ 【这里用 Box + background，不用 Material3 的 Surface】════════
+        // 怀疑点排查：Surface 内部会创建一个图形层（Modifier.surface），
+        // 而我们在这台小米电视上遇到的现象是"状态变了、组合了，
+        // 但屏幕永远不重绘"——连按键移动焦点都不重绘。
+        // 图形层缓存是这种症状的常见嫌疑犯。
+        //
+        // 换成一个最朴素的 Box + background 来验证：
+        // 它同样能把 colorScheme.background 铺出来，
+        // 但不会引入额外的层。
+        // ═══════════════════════════════════════════════════════════════
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background),
         ) {
             // 所有页面都套在安全区里 —— 这条约定从模块 1 立到现在没变过
             TvSafeArea {
