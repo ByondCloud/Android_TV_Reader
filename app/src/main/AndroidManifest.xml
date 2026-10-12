@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+
+
+<!-- uses-feature: 向系统/应用商店"申报"硬件或软件能力。
+不申报 = 系统按最坏情况推断（需要触摸屏）→ 设备被过滤掉-->
+
+    <!--
+      ① 声明本应用支持 Android TV (Leanback)。
+         required="false" 表示"支持但不是必须" —— 这样手机也能装。
+         如果写 required="true"，应用商店就会把它判定为 TV 独占，手机装不了。
+    -->
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+
+
+    <!--
+      ② 声明不需要触摸屏。
+         电视/盒子没有触摸屏。如果不写这一行，系统会"默认推断"你的应用需要触摸屏，
+         结果就是部分电视设备直接搜不到你的应用。这一行必须写。
+    -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+
+<!--    allowBackup: 是否允许系统备份应用数据
+        banner:手机用 `icon`，Android TV 桌面启动器用 banner
+        dataExtractionRules: Android 12+ 新增，精细化备份规则
+        fullBackupContent: Android 12+ 新增，全量备份规则
+        icon: 图标
+        label: 应用名称
+        roundIcon: 圆角图标
+        supportsRtl: 是否支持右对齐
+        theme: 主题
+        windowSoftInputMode: 软键盘模式
+-->
+    <application
+        android:allowBackup="true"
+        android:banner="@drawable/app_banner"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MyApplication">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.MyApplication"
+            android:windowSoftInputMode="adjustResize">
+
+            <!-- intent-filter: 声明"我响应哪些意图"。
+            MAIN + LAUNCHER = 我是可启动的入口-->
+
+            <!-- 手机桌面入口 -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+              ③ 电视桌面入口。LEANBACK_LAUNCHER 和 LAUNCHER 是两套独立的启动器分类，
+                 必须写成两个 intent-filter，不能合并。
+                 少了这一段，Android Studio 点 Run 照样能启动（因为 adb 直接命令启动），
+                 但电视桌面完全不知道你的应用存在 —— 这就是你刚才"找不到"的原因。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+    </application>
+</manifest>

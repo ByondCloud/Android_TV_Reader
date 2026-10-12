@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      过扫描(Overscan)安全区。
+
+      背景知识：老式电视机会把画面边缘裁掉一部分（约 5%）来保证画面填满屏幕。
+      Android TV 的逻辑画布【固定是 960 x 540 dp】—— 1080p 和 720p 的电视
+      在 dp 单位下都是这个尺寸，所以这里的数值不需要再分机型。
+
+      5% 换算成 dp：左右各 48dp，上下各 27dp。
+      所有页面内容都必须留出这个边距，否则边缘文字会被电视物理裁掉。
+    -->
+    <dimen name="tv_safe_horizontal">48dp</dimen>
+    <dimen name="tv_safe_vertical">27dp</dimen>
+
+
+
+</resources>

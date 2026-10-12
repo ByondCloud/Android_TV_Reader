@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      parent 从 Material.Light 改成 Material（深色版）。
+      这个 XML 主题在 Compose 接管界面之前生效，决定了【窗口背景色】。
+      如果不改，启动瞬间会闪一下白屏 —— 在黑漆漆的客厅里特别刺眼。
+    -->
+    <style name="Theme.MyApplication" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF10131A</item>
+        <item name="android:colorBackground">#FF10131A</item>
+    </style>
+
+</resources>
