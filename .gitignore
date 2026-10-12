@@ -24,3 +24,7 @@ local.properties
 /ui-dump.xml
 # Kotlin 缂栬瘧鍣ㄧ殑浼氳瘽鐩綍
 /.kotlin
+
+# 调试时从设备 pull 下来的第三方 APK / dump（体积大，不该进版本库）
+/tv-*.apk
+/tv-*.txt

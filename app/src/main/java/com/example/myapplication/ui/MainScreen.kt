@@ -336,6 +336,7 @@ private fun MainScreenContent(
                     // 有进度就从进度开始，没读过就从全书开头
                     initialProgress = content.book.progress,
                     settings = readerSettings,
+                    ttsReader = container.ttsReader,
                     onProgressChange = { absoluteOffset ->
                         // 章号是为了书架页显示"续读 · 第 N 章"。
                         // 整本阅读模式下单元不是章节，但 chapters 数据仍在，

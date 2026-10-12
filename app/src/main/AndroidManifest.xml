@@ -31,6 +31,23 @@
         android:name="android.hardware.touchscreen"
         android:required="false" />
 
+    <!--
+      ④ 包可见性声明（Android 11+ 必须，漏了是【静默失败】）
+
+      从 Android 11 起，应用默认只能"看见"自己需要的那部分包。
+      没有在这里声明的意图，queryIntentServices() 会返回【空列表】——
+      注意它的坑：不报错、不崩溃、也不抛异常，就是什么都查不到。
+      排查起来极其难受，因为代码看起来完全正确。
+
+      我们要枚举设备上装了哪些 TTS 引擎（朗读功能的第一步），
+      所以必须声明这个意图。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
 <!--    allowBackup: 是否允许系统备份应用数据
         banner:手机用 `icon`，Android TV 桌面启动器用 banner（320x180）
         dataExtractionRules: Android 12+ 新增，精细化备份规则
