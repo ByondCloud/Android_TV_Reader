@@ -522,70 +522,56 @@ private fun BookGrid(
     //   · 焦点可见性是电视应用的【第一原则】，不能用它换性能
     //   · 真要优化，将来该做的是分页加载，而不是回到 LazyGrid
     // ═══════════════════════════════════════════════════════════════
-    Column(
-        modifier = Modifier
-            .fillMaxSize(),
-        // 【刻意不加 verticalScroll】
-        // 实测：这台电视上任何"可滚动容器"（verticalScroll / LazyVerticalGrid）
-        // 内部的焦点视觉都不会重绘 —— 焦点框画不出来。
-        // 对电视应用来说焦点可见性是第一原则，所以宁可先牺牲滚动。
-        //
-        // 书太多放不下时，正确的方向是做【分页】而不是套滚动容器。
+    // ══ 【为什么可以放心用 LazyVerticalGrid 了】══════════════════════
+    // 之前这里被迫换成过 Column + Row 全量布局，因为 LazyVerticalGrid
+    // 内部的焦点视觉根本不重绘 —— 焦点框画不出来、按方向键像失灵。
+    //
+    // 但那个问题的根因【不在网格】，而在 Mali GPU 的图层缓存：
+    // 这台电视是联发科 MT9655 + Mali，它的 RenderNode 缓存和 Compose
+    // 不兼容 —— 凡是依赖 graphicsLayer 的东西，外观变化都会被吞掉。
+    // LazyVerticalGrid 只是恰好用 graphicsLayer 做滚动位移而已。
+    //
+    // （同样受影响的还有 Material3 的 Surface、Modifier.scale、
+    //   verticalScroll —— 它们全都走同一条 graphicsLayer 路径。）
+    //
+    // 现在 MainActivity 里已经把窗口绘制降级到软件路径
+    // （setLayerType(LAYER_TYPE_SOFTWARE)），绕开了那套有问题的合成，
+    // 所以【滚动和焦点视觉可以兼得】—— 实测两者都正常。
+    // ═══════════════════════════════════════════════════════════════
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(3),
+        horizontalArrangement = Arrangement.spacedBy(20.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
+        modifier = Modifier.fillMaxSize(),
     ) {
-        // 每 3 个一组，铺成一行
-        books.chunked(3).forEachIndexed { rowIndex, rowBooks ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(20.dp),
-            ) {
-                rowBooks.forEachIndexed { colIndex, book ->
-                    val index = rowIndex * 3 + colIndex
-                    // ══ 【为什么 weight 加在这个 Box 上，而不是 BookCard 上】══
-                    // BookCard 内部是个 Column，而 Column 的 weight 是【纵向】的。
-                    // 如果直接把 weight(1f) 传给 BookCard，它会落到 Column 的
-                    // 作用域里，结果是卡片被【垂直拉满】（实测就是这样）。
-                    //
-                    // 用一个 Row 作用域下的 Box 来承接 weight，负责"占三分之一的宽"，
-                    // BookCard 只负责填满这个 Box。职责分开，就不会串作用域。
-                    // ═══════════════════════════════════════════════════════
-                    Box(modifier = Modifier.weight(1f)) {
-                        BookCard(
-                            book = book,
-                            enabled = enabled,
-                            batchMode = batchMode,
-                            selected = book.id in selectedIds,
-                            // 批量模式下"确定键"变成"勾选/取消勾选"，而不是打开这本书
-                            onClick = {
-                                if (batchMode) onToggleSelect(book) else onOpenBook(book)
-                            },
-                            onFocus = { onFocusBook(book) },
-                            // ══ 【这个 padding 是给"聚焦放大"留空间的】══════
-                            // 聚焦时卡片会 scale(1.05f) 放大，而这是绘制变换，
-                            // 不参与布局测量 —— 放大后的部分会超出格子边界被裁。
-                            // 给每张卡片留 8dp 内边距，放大后就仍落在格子内部。
-                            // ═══════════════════════════════════════════════
-                            modifier = Modifier
-                                // 第一本书是"从顶部按钮按下键"的落点，
-                                // 也是"按上键回顶部"的起点
-                                .then(
-                                    if (index == 0) {
-                                        Modifier
-                                            .focusRequester(firstBookRequester)
-                                            .focusProperties { up = upTarget }
-                                    } else {
-                                        Modifier
-                                    }
-                                )
-                                .padding(8.dp),
-                        )
-                    }
-                }
-                // 这一行不足 3 个时，补空白占位，保证卡片宽度一致
-                repeat(3 - rowBooks.size) {
-                    Spacer(Modifier.weight(1f))
-                }
-            }
+        itemsIndexed(books, key = { _, book -> book.id }) { index, book ->
+            BookCard(
+                book = book,
+                enabled = enabled,
+                batchMode = batchMode,
+                selected = book.id in selectedIds,
+                // 批量模式下"确定键"变成"勾选/取消勾选"，而不是打开这本书
+                onClick = { if (batchMode) onToggleSelect(book) else onOpenBook(book) },
+                onFocus = { onFocusBook(book) },
+                // ══ 【这个 padding 是给"聚焦放大"留空间的】══════════════
+                // 聚焦时卡片会 scale(1.05f) 放大，而这是绘制变换，
+                // 不参与布局测量 —— 放大后的部分会超出格子边界被裁。
+                // 给格子留 8dp 内边距，放大后就仍落在格子内部。
+                // ═══════════════════════════════════════════════════════
+                modifier = Modifier
+                    // 第一本书是"从顶部按钮按下键"的落点，
+                    // 也是"按上键回顶部"的起点
+                    .then(
+                        if (index == 0) {
+                            Modifier
+                                .focusRequester(firstBookRequester)
+                                .focusProperties { up = upTarget }
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .padding(8.dp),
+            )
         }
     }
 }
