@@ -1,7 +1,6 @@
 package com.example.myapplication.data.settings
 
 import android.content.Context
-import com.example.myapplication.domain.reader.ReaderMode
 import com.example.myapplication.domain.reader.ReaderSettings
 import com.example.myapplication.domain.reader.ReaderTheme
 
@@ -47,9 +46,6 @@ class SettingsRepository(context: Context) {
         return ReaderSettings(
             fontSizeSp = prefs.getFloat(KEY_FONT_SIZE, defaults.fontSizeSp),
             lineSpacingLevel = prefs.getInt(KEY_LINE_SPACING, defaults.lineSpacingLevel),
-            mode = runCatching {
-                ReaderMode.valueOf(prefs.getString(KEY_MODE, null) ?: defaults.mode.name)
-            }.getOrDefault(defaults.mode),
             contentPaddingDp = prefs.getInt(KEY_CONTENT_PADDING, defaults.contentPaddingDp),
             chapterSplitEnabled = prefs.getBoolean(KEY_CHAPTER_SPLIT, defaults.chapterSplitEnabled),
             theme = runCatching {
@@ -62,7 +58,6 @@ class SettingsRepository(context: Context) {
         prefs.edit()
             .putFloat(KEY_FONT_SIZE, settings.fontSizeSp)
             .putInt(KEY_LINE_SPACING, settings.lineSpacingLevel)
-            .putString(KEY_MODE, settings.mode.name)
             .putInt(KEY_CONTENT_PADDING, settings.contentPaddingDp)
             .putBoolean(KEY_CHAPTER_SPLIT, settings.chapterSplitEnabled)
             .putString(KEY_THEME, settings.theme.name)
@@ -83,7 +78,7 @@ class SettingsRepository(context: Context) {
          */
         const val KEY_LINE_SPACING = "lineSpacingLevel"
 
-        const val KEY_MODE = "mode"
+        const val KEY_MODE = "mode"   // 已废弃：阅读模式删掉了，只为兼容旧存档保留常量名记录
         const val KEY_CONTENT_PADDING = "contentPaddingDp"
         const val KEY_CHAPTER_SPLIT = "chapterSplitEnabled"
         const val KEY_THEME = "theme"

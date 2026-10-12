@@ -5,11 +5,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-// 【注意】scrollBy 是 ScrollableState 的【扩展函数】，不是成员方法，
-// 所以必须显式 import，否则会报 Unresolved reference。
-// 这是 Compose 里很常见的坑：方法看起来"应该"在对象上，其实是扩展。
-import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,9 +14,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -34,7 +26,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -47,7 +38,6 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
@@ -60,9 +50,7 @@ import com.example.myapplication.domain.model.Book
 import com.example.myapplication.domain.model.ParsedChapter
 import com.example.myapplication.domain.model.ReadingProgress
 import com.example.myapplication.domain.reader.Paginator
-import com.example.myapplication.domain.reader.ReaderMode
 import com.example.myapplication.domain.reader.ReaderSettings
-import com.example.myapplication.domain.reader.ReadingUnit
 import com.example.myapplication.domain.reader.ReadingUnits
 import com.example.myapplication.ui.components.tvFocusable
 import kotlinx.coroutines.Job
@@ -212,7 +200,6 @@ fun ReaderScreen(
                 unitCount = units.size,
                 unitTitle = unit.title,
                 unitLabel = if (settings.chapterSplitEnabled) "章" else "段",
-                mode = settings.mode,
             )
 
             Spacer(Modifier.height(12.dp))
@@ -231,34 +218,23 @@ fun ReaderScreen(
                 // 否则方向键会把焦点从面板挪回正文，用户就没法操作设置了。
                 val inputEnabled = !settingsVisible && !fontSpacingVisible
 
-                when (settings.mode) {
-                    ReaderMode.Paged -> PagedReader(
-                        body = body,
-                        settings = settings,
-                        initialOffset = offsetInUnit,
-                        inputEnabled = inputEnabled,
-                        onOffsetChange = { absoluteOffset = unit.startOffset + it },
-                        onPrevUnit = { goToUnit(unitIndex - 1, toEnd = true) },
-                        onNextUnit = { goToUnit(unitIndex + 1, toEnd = false) },
-                        onPageInfoChange = { current, total -> pageInfo = "第 $current / $total 页" },
-                        onOpenSettings = { settingsVisible = true },
-                        onBack = onBack,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-
-                    ReaderMode.Scroll -> ScrollReader(
-                        body = body,
-                        settings = settings,
-                        initialOffset = offsetInUnit,
-                        inputEnabled = inputEnabled,
-                        onOffsetChange = { absoluteOffset = unit.startOffset + it },
-                        onPrevUnit = { goToUnit(unitIndex - 1, toEnd = true) },
-                        onNextUnit = { goToUnit(unitIndex + 1, toEnd = false) },
-                        onOpenSettings = { settingsVisible = true },
-                        onBack = onBack,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
+                // 【这里曾经是 when (settings.mode) 两个分支】
+                // 现在只剩这一种阅读方式了，原因见 ReaderSettings 顶部的说明：
+                // 滚动模式在遥控器上会抖动、会卡住，而"翻页 + 上下逐行滚动"
+                // 这一套既稳又够用 —— 上下键本来就是逐行滚动。
+                PagedReader(
+                    body = body,
+                    settings = settings,
+                    initialOffset = offsetInUnit,
+                    inputEnabled = inputEnabled,
+                    onOffsetChange = { absoluteOffset = unit.startOffset + it },
+                    onPrevUnit = { goToUnit(unitIndex - 1, toEnd = true) },
+                    onNextUnit = { goToUnit(unitIndex + 1, toEnd = false) },
+                    onPageInfoChange = { current, total -> pageInfo = "第 $current / $total 页" },
+                    onOpenSettings = { settingsVisible = true },
+                    onBack = onBack,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
 
             Spacer(Modifier.height(8.dp))
@@ -282,9 +258,6 @@ fun ReaderScreen(
                     // 一次只显示一层，层级关系永远清晰。
                     settingsVisible = false
                     fontSpacingVisible = true
-                },
-                onToggleMode = {
-                    onSettingsChange(settings.copy(mode = settings.mode.toggled()))
                 },
                 onToggleChapterSplit = {
                     onSettingsChange(
@@ -344,7 +317,6 @@ fun ReaderScreen(
 private fun ReaderSettingsPanel(
     settings: ReaderSettings,
     onFontSpacing: () -> Unit,
-    onToggleMode: () -> Unit,
     onToggleChapterSplit: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -403,25 +375,7 @@ private fun ReaderSettingsPanel(
 
             Spacer(Modifier.height(10.dp))
 
-            // ② 阅读模式
-            // 【这一项是从"确定键"挪过来的】
-            // 确定键原来直接切换模式，但用户完全猜不到。
-            // 放到这里之后，至少它能被"看见"——
-            // 用户翻设置的时候会发现"哦，原来还能切成滚动"。
-            SettingRow(
-                label = "阅读模式",
-                description = if (settings.mode == ReaderMode.Paged) {
-                    "翻页：一次一屏，左右翻页。按确定键切换。"
-                } else {
-                    "滚动：上下连续阅读，一滑到底。按确定键切换。"
-                },
-                value = settings.mode.displayName,
-                onClick = onToggleMode,
-            )
-
-            Spacer(Modifier.height(10.dp))
-
-            // ③ 按章节分页
+            // ② 按章节分页
             SettingRow(
                 label = "按章节分页",
                 description = if (settings.chapterSplitEnabled) {
@@ -879,205 +833,6 @@ private fun PagedReader(
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-//  上下连续滚动模式
-// ══════════════════════════════════════════════════════════════════
-
-/** 滚动模式里的一个段落，带它在单元内的起始下标 */
-private data class Paragraph(val text: String, val startOffset: Int)
-
-/**
- * 上下连续阅读。
- *
- * ══ 为什么用 LazyColumn 而不是一个大 Text 加垂直滚动 ══════════════
- * 一段可能有几百行。如果用一个 Text 一次性渲染，
- * Compose 要在内存里为整段创建排版对象，还要把它全部画出来 ——
- * 在电视这种低配设备上会明显卡顿，滚动时掉帧。
- *
- * LazyColumn 只组合【屏幕上可见】的那几段，滚动时动态创建和回收。
- * ═══════════════════════════════════════════════════════════════
- */
-@Composable
-private fun ScrollReader(
-    body: String,
-    settings: ReaderSettings,
-    initialOffset: Int,
-    inputEnabled: Boolean,
-    onOffsetChange: (Int) -> Unit,
-    onPrevUnit: () -> Unit,
-    onNextUnit: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
-    val density = LocalDensity.current
-
-    val textStyle = remember(settings.fontSizeSp, settings.lineHeightSp) {
-        TextStyle(
-            fontSize = settings.fontSizeSp.sp,
-            lineHeight = settings.lineHeightSp.sp,
-        )
-    }
-
-    // 按 \n 拆段落，同时记录每段的起始下标。
-    // 跳过空行 —— 空行在滚动模式里只表现为段间距，不需要单独占一个 item。
-    val paragraphs = remember(body) {
-        val result = ArrayList<Paragraph>()
-        var start = 0
-        var i = 0
-        while (i <= body.length) {
-            if (i == body.length || body[i] == '\n') {
-                if (i > start) {
-                    result.add(Paragraph(body.substring(start, i), start))
-                }
-                start = i + 1
-            }
-            i++
-        }
-        result
-    }
-
-    /**
-     * 每次按上下键滚动的距离：正好一行。
-     * 用行高（sp）换算成像素，这样它和字号设置联动 ——
-     * 用户把字号调大，滚动的"一行"也会跟着变大。
-     */
-    val lineStep = with(density) { settings.lineHeightSp.sp.toPx() }
-
-    // 首次进入（或换单元）时，滚动到进度记录的位置。
-    // 用 indexOfLast（最后一个起始位置 <= 目标偏移的段落）找最接近的那一段。
-    LaunchedEffect(paragraphs, initialOffset) {
-        if (paragraphs.isEmpty()) return@LaunchedEffect
-        val target = paragraphs.indexOfLast { it.startOffset <= initialOffset }
-        listState.scrollToItem(if (target < 0) 0 else target)
-    }
-
-    // 把"当前看到的第一个段落"报给外层，用来记录阅读进度。
-    // snapshotFlow 把"状态读取"变成可观察的数据流，
-    // 这样就能在非 Composable 的协程里监听状态变化。
-    LaunchedEffect(listState, paragraphs) {
-        snapshotFlow { listState.firstVisibleItemIndex }.collect { index ->
-            paragraphs.getOrNull(index)?.let { onOffsetChange(it.startOffset) }
-        }
-    }
-
-    val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(inputEnabled) {
-        if (inputEnabled) {
-            runCatching { focusRequester.requestFocus() }
-        }
-    }
-
-    var autoScrollJob by remember { mutableStateOf<Job?>(null) }
-
-    fun stopAutoScroll() {
-        autoScrollJob?.cancel()
-        autoScrollJob = null
-    }
-
-    /** 长按连续滚动。参数是【每 tick 滚动的像素数】，正数向下。 */
-    fun startAutoScroll(stepPx: Float) {
-        stopAutoScroll()
-        autoScrollJob = scope.launch {
-            delay(LONG_PRESS_DELAY_MS)
-            while (isActive) {
-                listState.scrollBy(stepPx)
-                delay(AUTO_SCROLL_INTERVAL_MS)
-            }
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose { stopAutoScroll() }
-    }
-
-    fun handleKey(event: KeyEvent): Boolean {
-        val isRepeat = event.nativeKeyEvent.repeatCount > 0
-        val isVertical = event.key == Key.DirectionUp || event.key == Key.DirectionDown
-
-        if (event.type == KeyEventType.KeyUp) {
-            if (isVertical) {
-                stopAutoScroll()
-                return true
-            }
-            return false
-        }
-
-        if (event.type != KeyEventType.KeyDown) return false
-
-        // 和"打开设置"一样，这两个键任何时候都要能用
-        when (event.key) {
-            // 确定键和设置键都打开设置面板（理由见 PagedReader 里的注释）
-            Key.DirectionCenter, Key.Enter, Key.Settings, Key.Menu -> {
-                onOpenSettings()
-                return true
-            }
-            Key.Back -> { onBack(); return true }
-        }
-
-        // 按住不放产生的重复事件交给自动滚动协程，这里不重复触发
-        if (isRepeat && isVertical) return true
-
-        return when (event.key) {
-            // ── 上下：滚一行 / 长按连续滚 ────────────────────
-            Key.DirectionDown -> {
-                scope.launch { listState.scrollBy(lineStep) }
-                startAutoScroll(lineStep)
-                true
-            }
-
-            Key.DirectionUp -> {
-                // 已经在最顶端时按上键 → 认为用户想回上一个单元。
-                // 这是"滚到边界自动跳"的落地：不给它一个出口的话，
-                // 用户滚到开头就会觉得卡住了。
-                if (listState.firstVisibleItemIndex == 0 &&
-                    listState.firstVisibleItemScrollOffset == 0
-                ) {
-                    onPrevUnit()
-                } else {
-                    scope.launch { listState.scrollBy(-lineStep) }
-                    startAutoScroll(-lineStep)
-                }
-                true
-            }
-
-            // ── 左右：切单元 ────────────────────────────────
-            Key.DirectionLeft -> { onPrevUnit(); true }
-            Key.DirectionRight -> { onNextUnit(); true }
-
-            else -> false
-        }
-    }
-
-    Box(
-        modifier = modifier
-            .focusRequester(focusRequester)
-            .onKeyEvent { handleKey(it) }
-            .focusable(enabled = inputEnabled)
-    ) {
-        LazyColumn(
-            state = listState,
-            verticalArrangement = Arrangement.spacedBy((settings.lineHeightSp / 2).dp),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            itemsIndexed(paragraphs) { _, paragraph ->
-                Text(
-                    text = paragraph.text,
-                    style = textStyle,
-                    color = MaterialTheme.colorScheme.onBackground,
-                )
-            }
-
-            // 末尾留一块空白，这样最后一段也能滚到屏幕上方，
-            // 不会尴尬地卡在底部。
-            item {
-                Spacer(Modifier.height(200.dp))
-            }
-        }
-    }
-}
 
 // ══════════════════════════════════════════════════════════════════
 //  公共组件
@@ -1090,7 +845,6 @@ private fun ReaderTopBar(
     unitCount: Int,
     unitTitle: String,
     unitLabel: String,
-    mode: ReaderMode,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1126,7 +880,7 @@ private fun ReaderTopBar(
         )
         Spacer(Modifier.width(12.dp))
         Text(
-            text = "${mode.displayName}模式 · 上下滚动 · 左右翻${if (mode == ReaderMode.Paged) "页" else "段"} · 确定/设置键打开菜单",
+            text = "上下逐行滚动 · 左右整屏翻页 · 确定键/设置键打开菜单",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.secondary,
         )
