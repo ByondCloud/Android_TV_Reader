@@ -121,9 +121,11 @@ fun BookShelfScreen(
 
     val panelOpen = menuBook != null || renamingBook != null || deletingBook != null
 
-    // 两个"长按快捷跳转"的目标。长按上 → 导入按钮；长按下 → 右下角删除按钮。
+    // 顶部两个按钮的焦点引用。
+    // 长按上键要能一步跳回【批量删除】—— 书多的时候，
+    // 从网格底部一格格往上按可能要按十几下。
     val importRequester = remember { FocusRequester() }
-    val batchDeleteRequester = remember { FocusRequester() }
+    val batchRequester = remember { FocusRequester() }
 
     Box(
         modifier = modifier
@@ -156,38 +158,27 @@ fun BookShelfScreen(
                     false
                 }
             }
-            // ══ 【批量模式下的长按快捷跳转】══════════════════════════
-            // 需求：短按方向键让焦点逐格移动；长按上直接跳到「导入书籍」，
-            //       长按下直接跳到右下角的「删除」。
+            // ══ 【长按上键 → 跳到顶部的「批量删除」按钮】══════════════
+            // 短按必须【放行】给焦点系统，否则焦点根本不会移动；
+            // 长按（系统按住时会重复发送 KeyDown 并递增 repeatCount）才拦截。
             //
-            // 【为什么必须用 onPreviewKeyEvent 而不是 onKeyEvent】
-            // 短按要【放行】给焦点系统，否则焦点根本不会移动。
-            // onPreviewKeyEvent 是下发阶段，我们能先看到事件；
-            // 只在"这是长按产生的重复事件"时才拦截，短按返回 false 放行。
+            // 【为什么用 onPreviewKeyEvent 而不是 onKeyEvent】
+            // preview 是下发阶段，我们在焦点系统之前看到事件，
+            // 才能"选择性拦截"；用 onKeyEvent（冒泡阶段）的话，
+            // 短按还没轮到我们就已经被列表消费了。
             //
-            // 【怎么判断长按】
-            // 系统在按住方向键时会重复发送 KeyDown，并递增 repeatCount：
-            //   repeatCount == 0  → 用户刚按下去（短按的第一次）
-            //   repeatCount >  0  → 按住不放产生的重复
-            // 所以"放行第一次、拦截后续"正好等于"短按正常走、长按跳转"。
+            // 【为什么不再判断 batchMode】
+            // 这个按钮现在常驻在顶部，所以任何模式下长按上跳过去都有意义。
+            // ═══════════════════════════════════════════════════════
             .onPreviewKeyEvent { event ->
-                if (!batchMode || event.type != KeyEventType.KeyDown) {
-                    return@onPreviewKeyEvent false
-                }
-                if (event.nativeKeyEvent.repeatCount <= 0) {
-                    return@onPreviewKeyEvent false
-                }
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                if (event.nativeKeyEvent.repeatCount <= 0) return@onPreviewKeyEvent false
 
-                when (event.key) {
-                    Key.DirectionDown -> {
-                        runCatching { batchDeleteRequester.requestFocus() }
-                        true
-                    }
-                    Key.DirectionUp -> {
-                        runCatching { importRequester.requestFocus() }
-                        true
-                    }
-                    else -> false
+                if (event.key == Key.DirectionUp) {
+                    runCatching { batchRequester.requestFocus() }
+                    true
+                } else {
+                    false
                 }
             }
     ) {
@@ -195,9 +186,27 @@ fun BookShelfScreen(
 
             ShelfHeader(
                 count = books.size,
-                onImportClick = onImportClick,
                 enabled = !panelOpen,
+                batchMode = batchMode,
+                selectedCount = selectedIds.size,
+                onImportClick = onImportClick,
+                onBatchClick = {
+                    if (batchMode) {
+                        // 已经是批量模式 → 这个按钮就是"执行删除"
+                        if (selectedIds.isNotEmpty()) {
+                            val ids = selectedIds.toList()
+                            batchMode = false
+                            selectedIds = emptySet()
+                            onDeleteBooks(ids)
+                        }
+                    } else {
+                        // 普通模式 → 进入批量勾选
+                        selectedIds = emptySet()
+                        batchMode = true
+                    }
+                },
                 importRequester = importRequester,
+                batchRequester = batchRequester,
             )
 
             Spacer(Modifier.height(20.dp))
@@ -223,18 +232,14 @@ fun BookShelfScreen(
             }
         }
 
-        // ── 批量模式：右下角的删除按钮 ──────────────────────
+        // ── 批量模式：左下角的纯文字提示 ────────────────────
+        // 【注意这里没有按钮】
+        // 执行删除的按钮是顶部那个常驻按钮（批量模式下它变成
+        // "删除选中的 N 本"）。这里只负责告诉用户怎么操作。
         if (batchMode) {
-            BatchBar(
+            BatchHint(
                 selectedCount = selectedIds.size,
-                onDelete = {
-                    val ids = selectedIds.toList()
-                    batchMode = false
-                    selectedIds = emptySet()
-                    onDeleteBooks(ids)
-                },
-                deleteRequester = batchDeleteRequester,
-                modifier = Modifier.align(Alignment.BottomEnd),
+                modifier = Modifier.align(Alignment.BottomStart),
             )
         }
 
@@ -292,17 +297,21 @@ fun BookShelfScreen(
 @Composable
 private fun ShelfHeader(
     count: Int,
-    onImportClick: () -> Unit,
     enabled: Boolean,
+    batchMode: Boolean,
+    selectedCount: Int,
+    onImportClick: () -> Unit,
+    onBatchClick: () -> Unit,
     importRequester: FocusRequester,
+    batchRequester: FocusRequester,
 ) {
     // ══ 空书架时的初始焦点 ══════════════════════════════════════
-    // BookGrid 只在"有书"时才渲染，所以书架为空时，
-    // 全页面只有"导入书籍"这一个可聚焦元素。
-    // 如果我们不管，就没有任何元素被选中 ——
-    // 用户按遥控器方向键毫无反应，看起来跟卡死一样。
-    LaunchedEffect(count, enabled) {
-        if (count == 0 && enabled) {
+    // 书架为空时没书可删，【批量删除】是禁用状态、也拿不到焦点，
+    // 所以焦点必须给「导入书籍」——
+    // 否则页面上没有任何元素被选中，用户按方向键毫无反应，
+    // 看起来跟 App 卡死了没区别。
+    LaunchedEffect(count, enabled, batchMode) {
+        if (count == 0 && enabled && !batchMode) {
             runCatching { importRequester.requestFocus() }
         }
     }
@@ -323,6 +332,29 @@ private fun ShelfHeader(
             color = MaterialTheme.colorScheme.secondary,
         )
         Spacer(Modifier.weight(1f))
+
+        // ══ 【批量删除】按钮：常驻，位置在【导入书籍】左边 ═════════
+        // 【一个按钮两种身份】
+        //   普通模式：显示"批量删除"，按了进入勾选模式
+        //   勾选模式：显示"删除选中的 N 本"，按了真的删
+        //
+        // 这样页面右下角就不需要再放执行按钮了 ——
+        // 少一个按钮、少一处焦点死角，用户也不用记"删除在哪"。
+        // 和导入页的「批量导入」按钮是完全一样的思路。
+        //
+        // 【为什么一本没选时禁用】
+        // 空删除没有意义，而且会让用户以为"我按了怎么没反应"。
+        // 灰掉的按钮本身就在说"现在还不能按"。
+        // ═══════════════════════════════════════════════════════════
+        TvButton(
+            text = if (batchMode) "删除选中的 $selectedCount 本" else "批量删除",
+            onClick = onBatchClick,
+            enabled = enabled && if (batchMode) selectedCount > 0 else count > 0,
+            modifier = Modifier.focusRequester(batchRequester),
+        )
+
+        Spacer(Modifier.width(12.dp))
+
         TvButton(
             text = "导入书籍",
             onClick = onImportClick,
@@ -510,38 +542,27 @@ private fun SelectionMark(selected: Boolean, modifier: Modifier = Modifier) {
 }
 
 /**
- * 批量模式下的底部操作条（对齐到页面右下角）。
+ * 批量模式下的操作提示（左下角【纯文字，不可聚焦】）。
+ *
+ * 【为什么这里故意不放按钮】
+ * 执行删除的是顶部那个常驻的「删除选中的 N 本」。
+ * 如果这里再放一个，就变成两个按钮做同一件事 ——
+ * 用户会犹豫该按哪个，焦点遍历也多一个岔路。
+ *
+ * 一个动作只给一个入口，是让界面变简单最有效的办法。
  */
 @Composable
-private fun BatchBar(
-    selectedCount: Int,
-    onDelete: () -> Unit,
-    deleteRequester: FocusRequester,
-    modifier: Modifier = Modifier,
-) {
-    Row(
+private fun BatchHint(selectedCount: Int, modifier: Modifier = Modifier) {
+    Text(
+        text = if (selectedCount > 0) {
+            "已选 $selectedCount 本 · 按顶部「删除选中的 $selectedCount 本」执行 · 返回键退出"
+        } else {
+            "确定键勾选要删除的书 · 长按上键跳到「批量删除」按钮 · 返回键退出"
+        },
+        style = MaterialTheme.typography.titleSmall,
+        color = if (selectedCount > 0) ReaderFocus else MaterialTheme.colorScheme.secondary,
         modifier = modifier.padding(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text(
-            text = if (selectedCount > 0) {
-                "已选 $selectedCount 本 · 返回键退出"
-            } else {
-                "确定键勾选要删除的书 · 返回键退出"
-            },
-            style = MaterialTheme.typography.titleMedium,
-            color = if (selectedCount > 0) ReaderFocus else MaterialTheme.colorScheme.secondary,
-        )
-
-        TvButton(
-            text = "删除选中的书",
-            onClick = onDelete,
-            // 一本都没选时不可点，避免误触空删除
-            enabled = selectedCount > 0,
-            modifier = Modifier.focusRequester(deleteRequester),
-        )
-    }
+    )
 }
 
 @Composable
