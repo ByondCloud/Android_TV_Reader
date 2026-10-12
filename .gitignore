@@ -28,3 +28,6 @@ local.properties
 # 调试时从设备 pull 下来的第三方 APK / dump（体积大，不该进版本库）
 /tv-*.apk
 /tv-*.txt
+
+# 测试用的小说 txt（体积大、可随时重新生成，不属于源码）
+/testbooks/
