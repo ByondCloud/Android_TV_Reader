@@ -5,15 +5,20 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -80,18 +85,33 @@ private const val AUTO_SCROLL_INTERVAL_MS = 50L
 private const val LINE_UNSET = -1
 
 /**
- * 阅读页 —— 支持「翻页」和「上下连续滚动」两种模式。
+ * 一次"跳转到指定位置"的请求。
+ *
+ * ══ 【为什么需要这条独立通道】═══════════════════════════════════
+ * PagedReader 的阅读位置是它【自己的内部状态】（那个叫 firstLine 的整数）。
+ * 外面把 absoluteOffset 改掉，它是不知情的 ——
+ * 因为正常情况下 absoluteOffset 恰恰是【由它算出来再报上去的】。
+ * 如果它一看到参数变化就重新定位，就会变成"自己触发自己"的死循环。
+ *
+ * 所以必须明确区分两种位移：
+ *   · 用户按方向键滚动   → firstLine 变 → 报给外层存进度（单向：内 → 外）
+ *   · 用户从目录点了某章 → 外层发请求   → firstLine 重定位（单向：外 → 内）
+ *
+ * [token] 每次递增。作用是：连续两次跳到【同一章】时，
+ * 光看 offset 分不出"这是新的一次请求"，加个序号才能可靠触发。
+ * ═══════════════════════════════════════════════════════════════
+ */
+private data class JumpRequest(val token: Int, val offsetInUnit: Int)
+
+/**
+ * 阅读页。
  *
  * ══ 遥控器按键约定 ══════════════════════════════════════════════
- *
- *                 翻页模式                    滚动模式
- *   ←  /  →    上一页 / 下一页            上一个单元 / 下一个单元
- *   ↑  /  ↓    向上滚 1 行              向上滚 1 行
- *              向下滚 1 行              向下滚 1 行
- *   （长按）    连续滚动                   连续滚动
- *   确定键      切换阅读模式              切换阅读模式
- *   设置键/菜单键  打开设置面板            打开设置面板
- *   返回键      回到书架                  回到书架
+ *   ↑ / ↓        逐行滚动（短按 1 行，长按连续滚）
+ *   ← / →        上一屏 / 下一屏；到单元边界则跳到相邻单元
+ *   确定键       打开设置菜单
+ *   设置键/菜单键  打开设置菜单
+ *   返回键       回到书架（面板打开时则关闭面板）
  *
  * 【设置键为什么同时支持两个键码】
  * 不同厂家的遥控器，那个"设置/菜单"按钮发出的键码不一样：
@@ -100,7 +120,7 @@ private const val LINE_UNSET = -1
  *
  * 【为什么上下键是"滚 1 行"而不是"跳单元"】
  * 一个单元可能有几十屏。如果上下键一按就跳整个单元，用户想微调位置时
- * 就只能靠左右键一屏一屏翻，很笨。改成行级滚动之后：
+ * 就只能靠左右键一屏一屏翻，很笨。行级滚动之后：
  *   - 短按：滚一行，可以精细地看到被屏幕切断的那一行
  *   - 长按：连续滚动，快速找到想看的位置
  * 而"整屏移动"交给左右键，两者各司其职。
@@ -172,6 +192,18 @@ fun ReaderScreen(
     // 字号/间距弹窗是否打开
     var fontSpacingVisible by remember { mutableStateOf(false) }
 
+    // 目录是否打开
+    var tocVisible by remember { mutableStateOf(false) }
+
+    // 待处理的跳转请求。null = 没有
+    var jumpRequest by remember { mutableStateOf<JumpRequest?>(null) }
+
+    // 当前落在第几章。目录列表用它高亮"你正在读的这章"。
+    // 整本连续模式下单元不是章节，但 chapters 数据仍在，照样能算出来。
+    val currentChapterIndex = chapters
+        .indexOfLast { it.startOffset <= absoluteOffset }
+        .coerceIn(0, max(0, chapters.size - 1))
+
     /** 切到相邻单元。往前翻时停在末尾，所以传入一个极大的偏移。 */
     fun goToUnit(index: Int, toEnd: Boolean) {
         val target = index.coerceIn(0, units.lastIndex)
@@ -227,6 +259,7 @@ fun ReaderScreen(
                     settings = settings,
                     initialOffset = offsetInUnit,
                     inputEnabled = inputEnabled,
+                    jumpRequest = jumpRequest,
                     onOffsetChange = { absoluteOffset = unit.startOffset + it },
                     onPrevUnit = { goToUnit(unitIndex - 1, toEnd = true) },
                     onNextUnit = { goToUnit(unitIndex + 1, toEnd = false) },
@@ -252,6 +285,12 @@ fun ReaderScreen(
         if (settingsVisible) {
             ReaderSettingsPanel(
                 settings = settings,
+                chapterCount = chapters.size,
+                currentChapterIndex = currentChapterIndex,
+                onOpenToc = {
+                    settingsVisible = false
+                    tocVisible = true
+                },
                 onFontSpacing = {
                     // 【为什么先关菜单再开弹窗】
                     // 两个浮层叠在一起会让用户搞不清"现在按返回键会关掉哪个"。
@@ -265,6 +304,38 @@ fun ReaderScreen(
                     )
                 },
                 onDismiss = { settingsVisible = false },
+            )
+        }
+
+        // ── 目录（章节列表）────────────────────────────────
+        if (tocVisible) {
+            ChapterListPanel(
+                chapters = chapters,
+                currentIndex = currentChapterIndex,
+                onSelect = { chapter ->
+                    // ══ 跳章的三步 ══════════════════════════════════
+                    // ① 改绝对偏移 —— 这会自动让外层重新算出"现在在哪个单元"
+                    absoluteOffset = chapter.startOffset
+
+                    // ② 发一个跳转请求。
+                    //    这一步不能省：如果目标章和当前章恰好落在【同一个单元】里
+                    //    （打开"整本连续"时很常见），单元的 body 没变，
+                    //    PagedReader 就不会重置自己的位置 —— 它需要被明确告知。
+                    //
+                    //    请求里的偏移要换算成【单元内偏移】，
+                    //    因为 PagedReader 只认识自己那一段文本的坐标系。
+                    val targetUnit = units.indexOfLast { it.startOffset <= chapter.startOffset }
+                        .coerceAtLeast(0)
+                    jumpRequest = JumpRequest(
+                        token = (jumpRequest?.token ?: 0) + 1,
+                        offsetInUnit = (chapter.startOffset - units[targetUnit].startOffset)
+                            .coerceAtLeast(0),
+                    )
+
+                    // ③ 关掉目录，让用户立刻看到跳过去的效果
+                    tocVisible = false
+                },
+                onDismiss = { tocVisible = false },
             )
         }
 
@@ -316,6 +387,9 @@ fun ReaderScreen(
 @Composable
 private fun ReaderSettingsPanel(
     settings: ReaderSettings,
+    chapterCount: Int,
+    currentChapterIndex: Int,
+    onOpenToc: () -> Unit,
     onFontSpacing: () -> Unit,
     onToggleChapterSplit: () -> Unit,
     onDismiss: () -> Unit,
@@ -364,18 +438,37 @@ private fun ReaderSettingsPanel(
 
             Spacer(Modifier.height(20.dp))
 
-            // ① 字号间距 —— 点进去打开底部弹窗实时调
+            // ① 目录 —— 放在【最上面】
+            // 【为什么它排第一】
+            // 它是这里唯一的"跳转"类操作，比调字号更常用：
+            // 用户打开设置，十有八九是想找上次读到哪、或者跳到某一章。
+            // 把最常用的放最上面，能省掉一次方向键。
+            SettingRow(
+                label = "目录",
+                description = if (chapterCount > 0) {
+                    "点进去可以跳到任意一章"
+                } else {
+                    "这本书没有识别出章节"
+                },
+                value = if (chapterCount > 0) "共 $chapterCount 章" else "—",
+                onClick = onOpenToc,
+                modifier = Modifier.focusRequester(focusRequester),
+                enabled = chapterCount > 0,
+            )
+
+            Spacer(Modifier.height(10.dp))
+
+            // ② 字号间距 —— 点进去打开底部弹窗实时调
             SettingRow(
                 label = "字号间距",
                 description = "调整正文字号和行间松紧",
                 value = "字号 ${settings.fontSizeSp.toInt()} · 间距 ${settings.lineSpacingLevel}",
                 onClick = onFontSpacing,
-                modifier = Modifier.focusRequester(focusRequester),
             )
 
             Spacer(Modifier.height(10.dp))
 
-            // ② 按章节分页
+            // ③ 按章节分页
             SettingRow(
                 label = "按章节分页",
                 description = if (settings.chapterSplitEnabled) {
@@ -418,11 +511,16 @@ private fun SettingRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     highlightValue: Boolean = true,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .tvFocusable(onClick = onClick, shape = RoundedCornerShape(10.dp))
+            .tvFocusable(
+                onClick = onClick,
+                enabled = enabled,
+                shape = RoundedCornerShape(10.dp),
+            )
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -430,7 +528,12 @@ private fun SettingRow(
             Text(
                 text = label,
                 style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
+                // 不可用时整体压暗，让用户一眼看出"这项现在点不了"
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.secondary
+                },
             )
             Spacer(Modifier.height(4.dp))
             Text(
@@ -445,12 +548,165 @@ private fun SettingRow(
         Text(
             text = value,
             style = MaterialTheme.typography.titleMedium,
-            color = if (highlightValue) {
+            color = if (highlightValue && enabled) {
                 MaterialTheme.colorScheme.tertiary
             } else {
                 MaterialTheme.colorScheme.secondary
             },
         )
+    }
+}
+
+/**
+ * 目录：章节列表。
+ *
+ * ══ 【两件让它好用的小事】═══════════════════════════════════════
+ * 1. 打开时自动滚到【当前章】。
+ *    一本几百章的书，如果每次都从第 1 章开始列，
+ *    用户要按几十下方向键才找得到自己在读的地方。
+ *
+ * 2. 当前章右边标一个「正在读」。
+ *    滚动之后用户可能已经分不清焦点在哪，一个文字标记最直接。
+ *
+ * 【这里可以放心用 LazyColumn】
+ * 它不涉及逐像素滚动（只有焦点在整行之间移动），
+ * 所以不会出现刚被删掉的那个滚动模式的抖动问题。
+ * ═══════════════════════════════════════════════════════════════
+ */
+@Composable
+private fun ChapterListPanel(
+    chapters: List<ParsedChapter>,
+    currentIndex: Int,
+    onSelect: (ParsedChapter) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val listState = rememberLazyListState()
+
+    // 挂在"当前章"那一行上的焦点引用
+    val currentRowRequester = remember { FocusRequester() }
+
+    // 【打开目录时必须主动把焦点放到列表上】
+    // 否则页面上没有任何元素被选中，用户按方向键毫无反应 ——
+    // 电视上的通用规则：新出现的界面一定要主动设置初始焦点。
+    //
+    // 【顺序：先滚动，再聚焦】
+    // 反过来的话，焦点会请求给一个还在屏幕外的元素，
+    // 聚焦可能失败或者导致列表跳动。
+    LaunchedEffect(currentIndex) {
+        if (chapters.isNotEmpty()) {
+            runCatching { listState.scrollToItem(currentIndex) }
+            runCatching { currentRowRequester.requestFocus() }
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xDD000000))
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown &&
+                    (event.key == Key.Back || event.key == Key.Settings || event.key == Key.Menu)
+                ) {
+                    onDismiss()
+                    true
+                } else {
+                    false
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .width(760.dp)
+                // 不铺满全屏，留出上下边距让人一眼看出"这是个浮层"
+                .fillMaxHeight(0.85f)
+                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
+                .border(1.dp, MaterialTheme.colorScheme.tertiary, RoundedCornerShape(14.dp))
+                .padding(24.dp),
+        ) {
+            Text(
+                text = "目录",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "共 ${chapters.size} 章 · 确定键跳转 · 返回键关闭",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            LazyColumn(
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                // key 用 chapter.index（章在书里的序号），
+                // 而不是列表下标 —— 这样即使将来支持"只显示某几章"，
+                // Compose 也能正确复用节点。
+                itemsIndexed(chapters, key = { _, c -> c.index }) { index, chapter ->
+                    ChapterRow(
+                        index = index,
+                        chapter = chapter,
+                        isCurrent = index == currentIndex,
+                        onClick = { onSelect(chapter) },
+                        // 只给当前章挂焦点引用
+                        modifier = if (index == currentIndex) {
+                            Modifier.focusRequester(currentRowRequester)
+                        } else {
+                            Modifier
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 目录里的一行 */
+@Composable
+private fun ChapterRow(
+    index: Int,
+    chapter: ParsedChapter,
+    isCurrent: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .tvFocusable(onClick = onClick, shape = RoundedCornerShape(8.dp))
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 章号固定宽度，右边的标题才能对齐成一列
+        Text(
+            text = "${index + 1}",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.secondary,
+            modifier = Modifier.width(52.dp),
+        )
+
+        Text(
+            // 有些书的章节标题就是空的（只有分隔符），兜底显示章号
+            text = chapter.title.ifBlank { "第 ${index + 1} 章" },
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+
+        if (isCurrent) {
+            Spacer(Modifier.width(12.dp))
+            Text(
+                text = "正在读",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+        }
     }
 }
 
@@ -572,6 +828,7 @@ private fun PagedReader(
     settings: ReaderSettings,
     initialOffset: Int,
     inputEnabled: Boolean,
+    jumpRequest: JumpRequest?,
     onOffsetChange: (Int) -> Unit,
     onPrevUnit: () -> Unit,
     onNextUnit: () -> Unit,
@@ -695,6 +952,25 @@ private fun PagedReader(
             val target = initialOffset.coerceIn(0, body.length)
             firstLine = layout.getLineForOffset(target).coerceIn(0, layout.lineCount - 1)
         }
+    }
+
+    // ══ 目录跳转 ════════════════════════════════════════════
+    // 【为什么需要 handledJumpToken 这个记录】
+    // LaunchedEffect 在 layout 变化时也会重跑。如果只判断"有请求就跳"，
+    // 那么用户跳完之后只要滚动一下、或者屏幕尺寸变一下（比如软键盘弹出），
+    // 就会被打回跳转点 —— 一个很莫名其妙的"位置自己弹回去"。
+    // 记住处理过的序号，同一个请求只执行一次。
+    var handledJumpToken by remember { mutableIntStateOf(-1) }
+
+    LaunchedEffect(jumpRequest, layout) {
+        val req = jumpRequest ?: return@LaunchedEffect
+        if (req.token == handledJumpToken) return@LaunchedEffect
+        val l = layout ?: return@LaunchedEffect
+        if (l.lineCount <= 0) return@LaunchedEffect
+
+        handledJumpToken = req.token
+        firstLine = l.getLineForOffset(req.offsetInUnit.coerceIn(0, body.length))
+            .coerceIn(0, l.lineCount - 1)
     }
 
     // 位置变化 → 报给外层保存进度
