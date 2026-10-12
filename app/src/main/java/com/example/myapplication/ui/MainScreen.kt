@@ -24,6 +24,7 @@ import com.example.myapplication.domain.source.SourceFile
 import com.example.myapplication.domain.usecase.ImportResult
 import com.example.myapplication.ui.importer.ImportScreen
 import com.example.myapplication.ui.reader.ReaderScreen
+import com.example.myapplication.TvSafeArea
 import com.example.myapplication.ui.shelf.BookShelfScreen
 import com.example.myapplication.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.Dispatchers
@@ -102,16 +103,28 @@ fun MainScreen(container: AppContainer) {
 
     // 昼夜主题包住全部页面。Surface 负责把 colorScheme.background 真正铺出来 ——
     // 光有 MaterialTheme 是不会自动画背景的，得有个容器去取这个颜色。
+    //
+    // ══ 【TvSafeArea 必须在这个 Surface 内部】══════════════════════
+    // 它只加 padding、不画背景，所以它的 padding 区域露出来的是
+    // 【外面那层容器】的颜色。
+    //
+    // 放在这里 -> padding 露的是当前主题的背景色，昼夜切换都不会有色差。
+    // 放在 MainActivity -> padding 露的是外层默认主题（永远深色），
+    //                     白天模式下就会出现一条黑边。
+    // ═══════════════════════════════════════════════════════════════
     MyApplicationTheme(darkTheme = readerSettings.theme == ReaderTheme.Night) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background,
         ) {
-            MainScreenContent(
-                container = container,
-                readerSettings = readerSettings,
-                onSettingsChange = { readerSettings = it },
-            )
+            // 所有页面都套在安全区里 —— 这条约定从模块 1 立到现在没变过
+            TvSafeArea {
+                MainScreenContent(
+                    container = container,
+                    readerSettings = readerSettings,
+                    onSettingsChange = { readerSettings = it },
+                )
+            }
         }
     }
 }

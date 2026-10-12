@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import com.example.myapplication.domain.model.Book
 import com.example.myapplication.domain.reader.ReaderTheme
 import com.example.myapplication.ui.components.TvButton
+import com.example.myapplication.ui.components.requestFocusWithRetry
 import com.example.myapplication.ui.components.TvCard
 import com.example.myapplication.ui.components.tvFocusable
 
@@ -311,19 +312,41 @@ private fun ShelfHeader(
     importRequester: FocusRequester,
     batchRequester: FocusRequester,
 ) {
-    // ══ 空书架时的初始焦点 ══════════════════════════════════════
-    // 书架为空时没书可删，【批量删除】是禁用状态、也拿不到焦点，
-    // 所以焦点必须给「导入书籍」——
-    // 否则页面上没有任何元素被选中，用户按方向键毫无反应，
-    // 看起来跟 App 卡死了没区别。
-    LaunchedEffect(count, enabled, batchMode) {
-        if (count == 0 && enabled && !batchMode) {
-            runCatching { importRequester.requestFocus() }
+    // ══ 进入书架时的初始焦点：固定在「导入书籍」上 ══════════════════
+    // 【不管书架里有没有书】。
+    //
+    // 原来的写法是"空书架才给导入按钮，有书就给第一张卡片"。
+    // 实测体验很差：冷启动时界面还在拼装，焦点请求经常落空，
+    // 用户面对一个"没有焦点"的界面 —— 按方向键毫无反应，
+    // 只能乱按碰运气，看焦点什么时候冒出来。
+    //
+    // 固定给它之后，起点永远是确定的：
+    //   · 想读书按一下「下」，焦点进网格
+    //   · 想导入直接按确定
+    // 「可预测」比「省一次按键」重要得多。
+    //
+    // 【为什么不能只调一次 requestFocus】
+    // LaunchedEffect 在第一帧【布局挂载完成之前】就会执行，
+    // 那时目标元素还没把焦点节点注册到窗口的 focus tree 上，
+    // 请求会静默失败（不抛异常、不报错，只是没落上）。
+    // 所以用 requestFocusWithRetry，它会重试到成功为止。
+    LaunchedEffect(enabled, batchMode) {
+        if (enabled && !batchMode) {
+            importRequester.requestFocusWithRetry()
         }
     }
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            // ══ 【这个 padding 是给"聚焦放大"留空间的】══════════════
+            // tvFocusable 聚焦时会 scale(1.08f)，而 scale 是【绘制变换】，
+            // 不参与布局测量 —— 放大后的部分会超出这一行的边界被裁掉，
+            // 表现就是"高亮框被切了一角"。
+            //
+            // 右边留得多一点：这三个按钮靠右排列，放大时主要往右溢出。
+            // ═══════════════════════════════════════════════════════
+            .padding(start = 10.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -439,23 +462,17 @@ private fun BookGrid(
     onToggleSelect: (Book) -> Unit,
     onFocusBook: (Book) -> Unit,
 ) {
-    val firstCard = remember { FocusRequester() }
-
-    // 【TV 必备】主动设置初始焦点。
-    // 电视上如果页面上没有任何元素被选中，用户按方向键【毫无反应】。
-    LaunchedEffect(books.isNotEmpty(), enabled) {
-        if (books.isNotEmpty() && enabled) {
-            runCatching { firstCard.requestFocus() }
-        }
-    }
-
+    // 【网格这里刻意不设初始焦点】
+    // 进入书架时的焦点统一由 ShelfHeader 固定在「导入书籍」上。
+    // 两处都抢的结果是启动瞬间焦点来回跳，最终谁也拿不到 ——
+    // 那正是"开屏没有焦点"的成因之一。
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
         horizontalArrangement = Arrangement.spacedBy(20.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
-        itemsIndexed(books, key = { _, book -> book.id }) { index, book ->
+        itemsIndexed(books, key = { _, book -> book.id }) { _, book ->
             BookCard(
                 book = book,
                 enabled = enabled,
@@ -464,8 +481,6 @@ private fun BookGrid(
                 // 批量模式下"确定键"变成"勾选/取消勾选"，而不是打开这本书
                 onClick = { if (batchMode) onToggleSelect(book) else onOpenBook(book) },
                 onFocus = { onFocusBook(book) },
-                // 只给第一张卡片挂 FocusRequester
-                //
                 // ══ 【这个 padding 是给"聚焦放大"留空间的】══════════════
                 // 聚焦时卡片会 scale(1.05f) 放大，而这是【绘制变换】，
                 // 不参与布局测量 —— 也就是说放大后的部分会超出格子边界。
@@ -474,8 +489,7 @@ private fun BookGrid(
                 // 给格子留 8dp 内边距，放大后（水平约 7.6dp、垂直约 3.3dp）
                 // 就仍然落在格子内部，不会被裁。
                 // ═══════════════════════════════════════════════════════
-                modifier = (if (index == 0) Modifier.focusRequester(firstCard) else Modifier)
-                    .padding(8.dp),
+                modifier = Modifier.padding(8.dp),
             )
         }
     }

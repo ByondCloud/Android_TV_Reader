@@ -409,6 +409,15 @@ private fun FileRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
+            // ══ 【这个 padding 是给"聚焦放大"留空间的】══════════════
+            // LazyColumn 会裁剪超出 item 边界的内容，而 tvFocusable 的
+            // scale 是【绘制变换】，放大后并不占布局空间 ——
+            // 不加这一层的话，聚焦那一行的左右文字会被切掉。
+            //
+            // 实际现象：novel-2.txt 显示成 "ovel-2.txt"，
+            // 右边的 "8 KB" 显示成 "8 KE"。
+            // ═══════════════════════════════════════════════════════
+            .padding(horizontal = 10.dp, vertical = 5.dp)
             .tvFocusable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,

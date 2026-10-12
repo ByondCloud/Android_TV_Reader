@@ -41,16 +41,25 @@ class MainActivity : ComponentActivity() {
         val container = appContainer
 
         setContent {
+            // ══ 【为什么这里只留一个"兜底"主题，不套 TvSafeArea】════════
+            // 真正的昼夜主题在 MainScreen 里（主题是用户设置，设置状态在那儿）。
+            //
+            // 这一层只保证"任何情况下都有一个合法的 ColorScheme"，
+            // 正常情况下会被 MainScreen 里那层立刻覆盖。
+            //
+            // 【TvSafeArea 为什么不在这里】
+            // 它只加 padding、不画背景，所以 padding 区域露出来的是
+            // 【它外面那个容器】的背景色。
+            //
+            // 如果放在这一层，它外面就是这个默认主题（深色）的 Surface ——
+            // 于是白天模式下会出现"安全区是黑的、内容区是米白的"，
+            // 一条很显眼的色带。
+            //
+            // 所以它必须待在【跟随用户设置的那个 Surface 内部】，
+            // 也就是 MainScreen 里。里外同色，问题消失。
+            // ═══════════════════════════════════════════════════════════
             MyApplicationTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background,
-                ) {
-                    // 所有页面都套在安全区里 —— 这条约定从模块 1 立到现在没变过
-                    TvSafeArea {
-                        MainScreen(container)
-                    }
-                }
+                MainScreen(container)
             }
         }
     }

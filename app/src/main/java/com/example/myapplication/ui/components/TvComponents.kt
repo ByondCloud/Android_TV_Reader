@@ -21,11 +21,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 
 // ── 焦点视觉的取色方式 ──────────────────────────────────────────
 // 【为什么这些颜色不写死在这里，而是从 MaterialTheme 取】
@@ -173,5 +175,41 @@ fun TvButton(
                 MaterialTheme.colorScheme.secondary
             },
         )
+    }
+}
+
+/**
+ * 带重试的焦点请求 —— TV 上做"初始焦点"必须用它。
+ *
+ * ══ 【为什么直接 requestFocus() 不行】═══════════════════════════
+ * `LaunchedEffect` 在第一帧【布局挂载完成之前】就会执行。
+ * 那一刻目标元素还没把自己的焦点节点注册到窗口的 focus tree 上，
+ * 于是 `requestFocus()` 会失败 —— 而且失败是【静默】的：
+ * 不抛异常、不打日志，只是焦点没落上去。
+ *
+ * 结果就是"开屏没有任何元素被选中"，用户按方向键毫无反应，
+ * 只能乱按，直到焦点系统自己摸到第一个可聚焦元素。
+ *
+ * ══ 【一个很容易写错的地方】════════════════════════════════════
+ * `requestFocus()` 本身【返回 Boolean】表示成功与否，
+ * 必须用这个返回值判断，不能写成：
+ *
+ *     runCatching { requestFocus(); true }   // ❌ 永远返回 true
+ *
+ * 那样第一次就"成功"了，重试逻辑形同虚设。
+ *
+ * @param maxAttempts 最多试几次。20 次 × 16ms ≈ 320ms，
+ *        足够覆盖低端电视上首帧布局的延迟，又不会无限等下去。
+ * @param intervalMs 两次尝试之间的间隔，16ms 约一帧。
+ */
+suspend fun FocusRequester.requestFocusWithRetry(
+    maxAttempts: Int = 20,
+    intervalMs: Long = 16L,
+) {
+    repeat(maxAttempts) {
+        // ★ 用 requestFocus() 自己的返回值判断成功与否
+        val ok = runCatching { requestFocus() }.getOrDefault(false)
+        if (ok) return
+        delay(intervalMs)
     }
 }
