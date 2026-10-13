@@ -46,7 +46,7 @@
 # 如果将来引入了需要反射的数据类（比如配合 Gson 做 JSON），
 # 就把类名填进来，保留它的构造函数和字段。
 #
-# -keep class com.example.myapplication.domain.model.** { *; }
+# -keep class com.cloud.androidtvreader.domain.model.** { *; }
 #
 # 【为什么现在注释掉】
 # 保留整个 model 包会阻止 R8 优化，白白损失性能。

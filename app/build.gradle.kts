@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.myapplication"
+    namespace = "com.cloud.androidtvreader"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.example.myapplication"
+        applicationId = "com.cloud.androidtvreader"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
