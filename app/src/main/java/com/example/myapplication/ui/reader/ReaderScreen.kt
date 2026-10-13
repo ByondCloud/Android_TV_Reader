@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.sp
 import com.example.myapplication.data.tts.AndroidTtsReader
 import com.example.myapplication.data.tts.TtsEngine
 import com.example.myapplication.data.tts.TtsLanguage
+import com.example.myapplication.fullScreenOverlay
 import com.example.myapplication.domain.model.Book
 import com.example.myapplication.domain.model.ParsedChapter
 import com.example.myapplication.domain.model.ReadingProgress
@@ -532,6 +533,9 @@ private fun ReaderSettingsPanel(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            // ★ 抵消 TvSafeArea 的边距，让遮罩真正铺满窗口。
+            // 不加的话外面一圈会露出页面背景色，和遮罩形成色差。
+            .fullScreenOverlay()
             // 半透明遮罩：让用户一眼看出"现在是设置状态"
             .background(Color(0xDD000000))
             // 返回键关闭面板。这个 onKeyEvent 在外层，
@@ -741,6 +745,8 @@ private fun ChapterListPanel(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            // ★ 抵消 TvSafeArea 的边距，让遮罩真正铺满窗口
+            .fullScreenOverlay()
             .background(Color(0xDD000000))
             .onKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown &&

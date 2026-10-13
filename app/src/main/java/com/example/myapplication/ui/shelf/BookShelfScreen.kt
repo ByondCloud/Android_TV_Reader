@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.myapplication.domain.model.Book
 import com.example.myapplication.domain.reader.ReaderTheme
+import com.example.myapplication.fullScreenOverlay
 import com.example.myapplication.ui.components.TvButton
 import com.example.myapplication.ui.components.requestFocusWithRetry
 import com.example.myapplication.ui.components.TvCard
@@ -966,6 +967,10 @@ private fun ModalPanel(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            // ★ 抵消 TvSafeArea 的边距，让遮罩真正铺满窗口。
+            // 不加这一行的话，外面那一圈会露出页面背景色，
+            // 和中间的暗色遮罩形成明显色差。
+            .fullScreenOverlay()
             .background(Color(0xDD000000))
             // imePadding：输入法弹出时把面板顶上去，否则输入框会被键盘挡住。
             // 这是电视上输入文字最容易忽略的一个细节。

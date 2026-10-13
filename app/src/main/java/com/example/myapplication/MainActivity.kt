@@ -10,6 +10,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.res.dimensionResource
 import com.example.myapplication.ui.MainScreen
 import com.example.myapplication.ui.theme.MyApplicationTheme
@@ -114,5 +115,49 @@ fun TvSafeArea(content: @Composable () -> Unit) {
             )
     ) {
         content()
+    }
+}
+
+/**
+ * 让"全屏遮罩"真正铺满整个窗口 —— 包括 TvSafeArea 留出的那圈边距。
+ *
+ * ══ 【为什么需要它】══════════════════════════════════════════════
+ * TvSafeArea 是用 Modifier.padding 实现的，它把【整个内容区】缩小了一圈。
+ * 所以画在它内部的 fillMaxSize() 遮罩，其实只能铺到安全区的边界。
+ *
+ * 结果就是：打开菜单 / 设置面板时，中间是暗色遮罩，
+ * 外面那一圈却还是页面背景色 —— 一眼就能看出来的色差。
+ * 用户的原话是"打开菜单，安全区的颜色与内容区的颜色不符"。
+ *
+ * ══ 【为什么不能简单用负 padding 抵消】══════════════════════════
+ * 试过 `padding(horizontal = -48.dp, ...)`，直接崩溃：
+ *     IllegalArgumentException: Padding must be non-negative
+ * Compose 明确禁止负 padding。
+ *
+ * 所以改用 Modifier.layout 手动放宽测量约束：
+ *   · 测量时把可用宽高各加上两倍的安全边距（于是能画到安全区之外）
+ *   · 上报尺寸仍然只用原来的约束（不会撑破父容器）
+ *   · 摆放时往左上偏移一个安全边距，正好覆盖到边界外
+ * ═══════════════════════════════════════════════════════════════
+ */
+@Composable
+fun Modifier.fullScreenOverlay(): Modifier {
+    val horizontal = dimensionResource(R.dimen.tv_safe_horizontal)
+    val vertical = dimensionResource(R.dimen.tv_safe_vertical)
+    return this.layout { measurable, constraints ->
+        val hPx = horizontal.roundToPx()
+        val vPx = vertical.roundToPx()
+        val placeable = measurable.measure(
+            constraints.copy(
+                minWidth = 0,
+                minHeight = 0,
+                maxWidth = constraints.maxWidth + hPx * 2,
+                maxHeight = constraints.maxHeight + vPx * 2,
+            )
+        )
+        // 上报原尺寸（不撑破父容器），把内容往左上挪，于是盖住安全区外那圈
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            placeable.place(-hPx, -vPx)
+        }
     }
 }
