@@ -533,11 +533,6 @@ private fun ReaderSettingsPanel(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // ★ 抵消 TvSafeArea 的边距，让遮罩真正铺满窗口。
-            // 不加的话外面一圈会露出页面背景色，和遮罩形成色差。
-            .fullScreenOverlay()
-            // 半透明遮罩：让用户一眼看出"现在是设置状态"
-            .background(Color(0xDD000000))
             // 返回键关闭面板。这个 onKeyEvent 在外层，
             // 内层的设置行不处理返回键，事件会冒泡上来。
             .onKeyEvent { event ->
@@ -552,6 +547,14 @@ private fun ReaderSettingsPanel(
             },
         contentAlignment = Alignment.Center,
     ) {
+        // 遮罩单独一层：扩展铺满窗口，但不影响面板的居中
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .fullScreenOverlay()
+                .background(Color(0xDD000000))
+        )
+
         Column(
             modifier = Modifier
                 .width(620.dp)
@@ -745,9 +748,6 @@ private fun ChapterListPanel(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // ★ 抵消 TvSafeArea 的边距，让遮罩真正铺满窗口
-            .fullScreenOverlay()
-            .background(Color(0xDD000000))
             .onKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown &&
                     (event.key == Key.Back || event.key == Key.Settings || event.key == Key.Menu)
@@ -760,6 +760,14 @@ private fun ChapterListPanel(
             },
         contentAlignment = Alignment.Center,
     ) {
+        // 遮罩单独一层：扩展铺满窗口，但不影响面板的居中
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .fullScreenOverlay()
+                .background(Color(0xDD000000))
+        )
+
         Column(
             modifier = Modifier
                 .width(760.dp)

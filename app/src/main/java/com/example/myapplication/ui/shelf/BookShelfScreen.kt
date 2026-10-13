@@ -967,13 +967,6 @@ private fun ModalPanel(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // ★ 抵消 TvSafeArea 的边距，让遮罩真正铺满窗口。
-            // 不加这一行的话，外面那一圈会露出页面背景色，
-            // 和中间的暗色遮罩形成明显色差。
-            .fullScreenOverlay()
-            .background(Color(0xDD000000))
-            // imePadding：输入法弹出时把面板顶上去，否则输入框会被键盘挡住。
-            // 这是电视上输入文字最容易忽略的一个细节。
             .imePadding()
             .onKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown && event.key == Key.Back) {
@@ -985,6 +978,21 @@ private fun ModalPanel(
             },
         contentAlignment = Alignment.Center,
     ) {
+        // ══ 【遮罩必须单独一层】══════════════════════════════════════
+        // 不能把 fullScreenOverlay() 加在外层 Box 上 —— 那样会把
+        // 【整个内容】都往左上偏移，面板就歪到边上去了（实测踩过）。
+        //
+        // 正确做法是分成两层：
+        //   ① 遮罩层单独扩展铺满窗口，不参与内容的居中计算
+        //   ② 内容层保持原样，依然由外层 Box 的 Center 对齐
+        // ═══════════════════════════════════════════════════════════
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .fullScreenOverlay()
+                .background(Color(0xDD000000))
+        )
+
         Column(
             modifier = Modifier
                 .width(width)
