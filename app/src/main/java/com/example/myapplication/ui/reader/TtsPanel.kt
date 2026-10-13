@@ -37,6 +37,7 @@ import com.example.myapplication.data.tts.TtsEngine
 import com.example.myapplication.data.tts.TtsLanguage
 import com.example.myapplication.fullScreenOverlay
 import com.example.myapplication.ui.components.TvButton
+import com.example.myapplication.ui.components.requestFocusWithRetry
 import com.example.myapplication.ui.components.tvFocusable
 
 /**
@@ -77,10 +78,17 @@ fun TtsPanel(
 ) {
     val firstFocus = remember { FocusRequester() }
 
-    // 面板出现就把焦点拿过来；探测结束后焦点可能落空，所以 key 带上 engines
+    // 面板出现就把焦点给「开始朗读」按钮。
+    //
+    // 【为什么要带重试】
+    // 那个按钮的 enabled 依赖"引擎和语言都选好了"，而选择是在
+    // 探测完成后才发生的。直接在 engines 变化的那一刻请求焦点，
+    // 按钮可能还是禁用状态（禁用元素拿不到焦点），请求会静默失败，
+    // 焦点就掉到别处去了。
+    // requestFocusWithRetry 会一直重试到成功，正好覆盖这段窗口。
     LaunchedEffect(engines) {
         if (engines != null) {
-            runCatching { firstFocus.requestFocus() }
+            firstFocus.requestFocusWithRetry()
         }
     }
 
@@ -154,9 +162,19 @@ fun TtsPanel(
                 // 退出统一交给返回键（上面已经写了提示）。
                 // 一个动作一个入口，焦点永远不会歧义。
                 TvButton(
-                    text = if (isSpeaking) "■ 停止朗读" else "▶ 开始朗读",
+                    // 朗读会话活着时（正在念或已暂停），这个按钮的语义是
+                    // "结束朗读"——按了之后右下角的圆形指示会消失，
+                    // 确定键也恢复成"打开菜单"。
+                    //
+                    // 【为什么在阅读区按确定只能暂停，而这里才能结束】
+                    // 用户在听书时按确定，意图几乎总是"我想歇一下"。
+                    // 如果那一下就把朗读会话彻底结束，他再想继续
+                    // 就得重新进面板、重新选引擎语言 —— 代价太大。
+                    // 所以"结束"这个动作放在一个要刻意走进来的地方。
+                    text = if (isSpeaking) "■ 暂停朗读" else "▶ 开始朗读",
                     onClick = { if (isSpeaking) onStop() else onStart() },
                     enabled = selectedEngine != null && selectedLanguage != null,
+                    modifier = Modifier.focusRequester(firstFocus),
                 )
 
                 // 把当前选择摘要写在按钮下面，用户按之前能确认一下
@@ -231,11 +249,12 @@ fun TtsPanel(
                             engine = engine,
                             selected = engine.name == selectedEngine?.name,
                             onClick = { onSelectEngine(engine) },
-                            modifier = if (index == 0) {
-                                Modifier.focusRequester(firstFocus)
-                            } else {
-                                Modifier
-                            },
+                            // 【这里刻意不挂初始焦点】
+                            // 最初把 firstFocus 挂在第一个引擎上，结果打开面板
+                            // 焦点落在列表里，用户要往上按好几次才够到「开始朗读」。
+                            // 而"进这个面板"的意图十有八九就是"我要听书" ——
+                            // 所以焦点应该直接落在那个按钮上。
+                            modifier = Modifier,
                         )
                         Spacer(Modifier.height(8.dp))
                     }

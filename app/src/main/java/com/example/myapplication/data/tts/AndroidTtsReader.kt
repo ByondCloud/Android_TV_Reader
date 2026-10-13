@@ -63,6 +63,16 @@ class AndroidTtsReader(private val context: Context) {
     /** 正在朗读的分段列表，用于把回调里的 utteranceId 映射回序号 */
     private var currentSegments: List<SpeechSegment> = emptyList()
 
+    /**
+     * 当前读到第几段。
+     *
+     * 【为什么需要它】Android 的 TextToSpeech 没有 pause API，
+     * "暂停"只能是 stop 掉队列。所以要自己记住进度，
+     * 恢复时才能从这一段接着念，而不是从头开始。
+     * 这个值在 onStart 回调里更新（那是最准的"正在念第几段"）。
+     */
+    private var pausedIndex: Int = 0
+
     /** 每段开始朗读时的回调，参数是段序号 */
     var onSegmentStart: ((Int) -> Unit)? = null
 
@@ -246,23 +256,46 @@ class AndroidTtsReader(private val context: Context) {
      * 我们才知道"现在念到第几段了"——这是做进度同步的前提。
      * 拼成一大段的话，中途就是个黑盒。
      */
-    fun speak(segments: List<SpeechSegment>) {
+    fun speak(segments: List<SpeechSegment>, fromIndex: Int = 0) {
         val instance = tts ?: return
         currentSegments = segments
 
-        segments.forEachIndexed { index, seg ->
+        // 从 fromIndex 开始入队。恢复朗读时会传 pausedIndex 进来。
+        segments.drop(fromIndex).forEachIndexed { i, seg ->
             instance.speak(
                 seg.text,
                 TextToSpeech.QUEUE_ADD,
                 null,
-                utteranceId(index),
+                utteranceId(fromIndex + i),
             )
         }
+    }
+
+    /**
+     * 暂停朗读。
+     *
+     * 【为什么用 stop 而不是系统暂停】
+     * Android 的 TextToSpeech 根本没有 pause API —— 只能 stop 掉整个队列。
+     * 所以暂停的实现是：清空队列，但把"读到第几段"记在 pausedIndex 里，
+     * 恢复时从那段重新念。
+     *
+     * 副作用是当前这一段会从头再念一遍（因为一段是入队的最小单位）。
+     * 分段最大 160 字，重念一遍的代价可以接受。
+     */
+    fun pause() {
+        runCatching { tts?.stop() }
+    }
+
+    /** 从暂停处继续。队列为空（比如已经念完）时什么也不做。 */
+    fun resume() {
+        if (currentSegments.isEmpty()) return
+        speak(currentSegments, pausedIndex)
     }
 
     /** 立即停止，并清空队列 */
     fun stop() {
         currentSegments = emptyList()
+        pausedIndex = 0
         runCatching { tts?.stop() }
     }
 
@@ -285,7 +318,11 @@ class AndroidTtsReader(private val context: Context) {
 
         override fun onStart(utteranceId: String?) {
             val index = indexOfUtterance(utteranceId)
-            if (index >= 0) onSegmentStart?.invoke(index)
+            if (index >= 0) {
+                // 记住进度，pause 之后 resume 要从这一段重新开始
+                pausedIndex = index
+                onSegmentStart?.invoke(index)
+            }
         }
 
         override fun onDone(utteranceId: String?) {

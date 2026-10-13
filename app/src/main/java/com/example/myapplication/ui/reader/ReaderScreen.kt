@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -33,6 +35,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -43,7 +46,9 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -88,6 +93,30 @@ private const val AUTO_SCROLL_INTERVAL_MS = 50L
 
 /** firstLine 的"尚未定位"标记 */
 private const val LINE_UNSET = -1
+
+/**
+ * 朗读时"正在念的那一段"的高亮底色。
+ *
+ * 【为什么用半透明黄】
+ * 正文颜色在昼夜两套主题下不同（暖白 / 深褐），
+ * 用不透明的纯黄会盖掉文字、或者和浅色主题的背景糊在一起。
+ * 带 alpha 的黄色在两种底色上都能看清文字，同时一眼看出读到哪了。
+ */
+private val READ_ALOUD_HIGHLIGHT = Color(0x66FFC857)
+
+/**
+ * 朗读的三种状态。
+ *
+ * 【为什么"暂停"和"停止"要分开】
+ *   暂停后按确定 -> 接着念
+ *   停止后按确定 -> 没有东西可继续
+ * 一个 Boolean 表达不了这个区别，而且用户会困惑
+ * "我按了确定怎么没反应"。
+ *
+ * Stopped 时右下角不显示那个圆形按钮 —— 按钮的存在本身就代表
+ * "朗读会话还活着"。
+ */
+private enum class TtsPlayState { Stopped, Playing, Paused }
 
 /**
  * 一次"跳转到指定位置"的请求。
@@ -220,7 +249,28 @@ fun ReaderScreen(
     var ttsEngines by remember { mutableStateOf<List<TtsEngine>?>(null) }
     var selectedEngine by remember { mutableStateOf<TtsEngine?>(null) }
     var selectedLanguage by remember { mutableStateOf<TtsLanguage?>(null) }
-    var isSpeaking by remember { mutableStateOf(false) }
+
+    // ══ 朗读状态机 ═══════════════════════════════════════════════
+    // Stopped  —— 没在朗读。右下角不显示那个圆形按钮。
+    // Playing  —— 正在念。确定键按下会暂停。
+    // Paused   —— 暂停中。确定键按下继续。
+    //
+    // 【为什么用三态而不是一个 Boolean】
+    // "暂停"和"停止"是两件事：暂停后按确定要继续读，
+    // 停止后按确定没有东西可继续。一个 Boolean 表达不了这个区别。
+    //
+    // 退出朗读只有一条路：回到 TTS 面板按「暂停朗读」（Stopped）。
+    // 这样用户不会误触退出——在阅读区按确定永远是"暂停/继续"。
+    // ═══════════════════════════════════════════════════════════════
+    var ttsState by remember { mutableStateOf(TtsPlayState.Stopped) }
+
+    /**
+     * 当前正在朗读的字符范围，用于在正文上画黄色高亮。
+     * 存的是【全书绝对偏移】的闭区间 —— 和 absoluteOffset 同一坐标系，
+     * 这样翻页/换单元之后也能正确对上是哪一段。
+     */
+    var spokenRange by remember { mutableStateOf<IntRange?>(null) }
+
     var ttsError by remember { mutableStateOf<String?>(null) }
 
     val ttsScope = rememberCoroutineScope()
@@ -258,7 +308,11 @@ fun ReaderScreen(
 
     // 引擎读完最后一段会回调 onFinished，用它把状态收回来
     DisposableEffect(Unit) {
-        ttsReader.onFinished = { isSpeaking = false }
+        ttsReader.onFinished = {
+            // 全部念完 -> 回到 Stopped，右下角的圆形按钮也随之消失
+            ttsState = TtsPlayState.Stopped
+            spokenRange = null
+        }
         onDispose {
             // 【离开阅读页必须停】否则用户都回书架了，书还在念
             ttsReader.stop()
@@ -292,14 +346,49 @@ fun ReaderScreen(
             }
 
             ttsError = null
+
+            // ══ 【高亮靠这个回调驱动】══════════════════════════════
+            // onSegmentStart 给的是"第几段"，而高亮需要"哪几个字"。
+            // 所以在这里把 segments 捕获进来，用序号查回字符范围。
+            //
+            // 段的 startOffset 是【全书偏移】，和 absoluteOffset 同一坐标系，
+            // 所以 PagedReader 可以直接拿它和当前显示的文字比对。
+            // ═══════════════════════════════════════════════════════
+            ttsReader.onSegmentStart = { index ->
+                val seg = segments.getOrNull(index)
+                spokenRange = seg?.let {
+                    it.startOffset until (it.startOffset + it.text.length)
+                }
+            }
+
             ttsReader.speak(segments)
-            isSpeaking = true
+            ttsState = TtsPlayState.Playing
         }
     }
 
+    /** 暂停：停在当前这一段，之后可以接着念 */
+    fun pauseSpeaking() {
+        ttsReader.pause()
+        ttsState = TtsPlayState.Paused
+    }
+
+    /** 继续：从暂停那一段重新念起 */
+    fun resumeSpeaking() {
+        ttsReader.resume()
+        ttsState = TtsPlayState.Playing
+    }
+
+    /**
+     * 彻底停止朗读并退出朗读模式。
+     *
+     * 【只有一条路能走到这里】回 TTS 面板按「暂停朗读」。
+     * 阅读区里的确定键永远只是"暂停/继续"，不会误触退出 ——
+     * 用户按确定只是想歇一下，不该把整个朗读会话结束掉。
+     */
     fun stopSpeaking() {
         ttsReader.stop()
-        isSpeaking = false
+        ttsState = TtsPlayState.Stopped
+        spokenRange = null
     }
 
     /** 切到相邻单元。往前翻时停在末尾，所以传入一个极大的偏移。 */
@@ -364,6 +453,14 @@ fun ReaderScreen(
                     onPageInfoChange = { current, total -> pageInfo = "第 $current / $total 页" },
                     onOpenSettings = { settingsVisible = true },
                     onBack = onBack,
+                    // 朗读时把"当前念到哪一段"传下去，由它画黄色高亮
+                    highlightRange = spokenRange,
+                    // 朗读会话活着时，确定键变成暂停/继续
+                    ttsActive = ttsState != TtsPlayState.Stopped,
+                    onToggleTts = {
+                        if (ttsState == TtsPlayState.Playing) pauseSpeaking()
+                        else resumeSpeaking()
+                    },
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -379,12 +476,32 @@ fun ReaderScreen(
             )
         }
 
+        // ── 朗读中的右下角圆形按钮 ──────────────────────────
+        // 【它只显示状态，不接受焦点 —— 这是刻意的】
+        // 电视上焦点就是"确定键会作用到谁"。如果这个按钮能被聚焦，
+        // 用户按方向键翻页/滚动时就可能把它选中，然后一按确定
+        // 就把朗读暂停了 —— 完全莫名其妙。
+        //
+        // 所以它没有 clickable，纯粹是个状态指示：
+        //   显示"❚❚" = 正在朗读，按确定可以暂停
+        //   显示"▶"   = 已暂停，按确定可以继续
+        // 想彻底关掉朗读，要回 TTS 面板按「暂停朗读」。
+        if (ttsState != TtsPlayState.Stopped) {
+            TtsStatusBadge(
+                playing = ttsState == TtsPlayState.Playing,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    // 底栏高约 40dp，往上让开一点免得压住进度信息
+                    .padding(end = 24.dp, bottom = 56.dp),
+            )
+        }
+
         // ── 设置面板（覆盖在阅读内容之上）────────────────────
         if (settingsVisible) {
             ReaderSettingsPanel(
                 settings = settings,
                 chapterCount = chapters.size,
-                isSpeaking = isSpeaking,
+                isSpeaking = ttsState != TtsPlayState.Stopped,
                 onOpenToc = {
                     settingsVisible = false
                     tocVisible = true
@@ -415,7 +532,7 @@ fun ReaderScreen(
                 engines = ttsEngines,
                 selectedEngine = selectedEngine,
                 selectedLanguage = selectedLanguage,
-                isSpeaking = isSpeaking,
+                isSpeaking = ttsState != TtsPlayState.Stopped,
                 errorMessage = ttsError,
                 onSelectEngine = { engine ->
                     selectedEngine = engine
@@ -429,7 +546,18 @@ fun ReaderScreen(
                     selectedLanguage = language
                     ttsError = null
                 },
-                onStart = { startSpeaking() },
+                onStart = {
+                    // ══ 【点「开始朗读」后自动关面板】══════════════════
+                    // 用户点这个按钮的意图很明确："开始念吧，我要看书了"。
+                    // 面板还挡在中间的话，他得再按一次返回才能看到正文 ——
+                    // 多一步操作，而且会以为朗读没生效。
+                    //
+                    // 关掉面板之后进入"朗读模式"：正文上会出现黄色高亮，
+                    // 右下角出现暂停按钮，确定键变成暂停/继续。
+                    // ═══════════════════════════════════════════════════
+                    ttsVisible = false
+                    startSpeaking()
+                },
                 onStop = { stopSpeaking() },
                 onDismiss = { ttsVisible = false },
             )
@@ -982,6 +1110,12 @@ private fun PagedReader(
     initialOffset: Int,
     inputEnabled: Boolean,
     jumpRequest: JumpRequest?,
+    /** 当前正在朗读的字符范围（全书绝对偏移，闭区间）。null = 没在朗读 */
+    highlightRange: IntRange?,
+    /** 朗读会话是否活着（正在念或已暂停）。决定确定键的语义 */
+    ttsActive: Boolean,
+    /** 确定键在朗读模式下的动作：暂停 / 继续 */
+    onToggleTts: () -> Unit,
     onOffsetChange: (Int) -> Unit,
     onPrevUnit: () -> Unit,
     onNextUnit: () -> Unit,
@@ -1184,7 +1318,23 @@ private fun PagedReader(
             // 见 ReaderSettingsPanel 的「阅读模式」那一项。
             // ═══════════════════════════════════════════════════════
             Key.DirectionCenter, Key.Enter, Key.Settings, Key.Menu -> {
-                onOpenSettings()
+                // ══ 【确定键的语义随朗读状态变化】══════════════════════
+                // 朗读进行中：确定键 = 暂停 / 继续。
+                //   用户正在听，最自然的动作就是"我想歇一下"，
+                //   这时弹出设置菜单非常扫兴，而且会挡住正文。
+                //
+                // 没在朗读：确定键 = 打开设置菜单（原来的行为）。
+                //
+                // 设置键和菜单键【永远】打开菜单 —— 它们是"我想调点什么"
+                // 的语义，和朗读的启停无关。
+                // ═══════════════════════════════════════════════════════
+                val isTtsKey =
+                    event.key == Key.DirectionCenter || event.key == Key.Enter
+                if (isTtsKey && ttsActive) {
+                    onToggleTts()
+                } else {
+                    onOpenSettings()
+                }
                 return true
             }
             Key.Back -> { onBack(); return true }
@@ -1253,8 +1403,39 @@ private fun PagedReader(
             val startLine = firstLine.coerceIn(0, lineCount - 1)
             // 最后一屏可能不满，用 minOf 兜住
             val endLine = minOf(startLine + linesPerPage - 1, lineCount - 1)
+            val pageStart = starts[startLine]
+            val pageEnd = ends[endLine]
+            val plainText = body.substring(pageStart, pageEnd)
+
+            // ══ 【朗读高亮】══════════════════════════════════════════
+            // 用 AnnotatedString 给"正在念的那一段"加黄色背景。
+            //
+            // 【坐标要怎么换算】
+            // spokenRange 是【全书绝对偏移】，而这里要的是【本屏文字内】的
+            // 下标 —— 所以减掉这一屏的起始偏移 pageStart。
+            //
+            // 还要处理"高亮不在当前屏"的情况：朗读跑到下一屏之后，
+            // 这段范围可能整个落在本屏之外，那时 s >= e，不加样式即可，
+            // 正常显示没有高亮。用户翻页过去就能看到。
+            // ═══════════════════════════════════════════════════════════
+            val annotated = remember(plainText, highlightRange, pageStart) {
+                buildAnnotatedString {
+                    append(plainText)
+                    val range = highlightRange ?: return@buildAnnotatedString
+                    val s = (range.first - pageStart).coerceIn(0, plainText.length)
+                    val e = (range.last + 1 - pageStart).coerceIn(0, plainText.length)
+                    if (s < e) {
+                        addStyle(
+                            SpanStyle(background = READ_ALOUD_HIGHLIGHT),
+                            s,
+                            e,
+                        )
+                    }
+                }
+            }
+
             Text(
-                text = body.substring(starts[startLine], ends[endLine]),
+                text = annotated,
                 style = textStyle,
                 color = MaterialTheme.colorScheme.onBackground,
             )
@@ -1312,6 +1493,44 @@ private fun ReaderTopBar(
             text = "上下逐行滚动 · 左右整屏翻页 · 确定键/设置键打开菜单",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.secondary,
+        )
+    }
+}
+
+/**
+ * 朗读状态指示徽标（右下角的圆形按钮样式）。
+ *
+ * ══ 【它为什么不可点击、不可聚焦】══════════════════════════════
+ * 电视上"焦点"就等于"确定键会作用到谁"。这个徽标如果可聚焦，
+ * 用户按方向键翻页时就可能把它选中，然后一按确定就把朗读暂停了 ——
+ * 完全莫名其妙。
+ *
+ * 所以它【刻意不加 clickable】—— 没有点击、也不会进焦点树，
+ * 只作为状态指示存在：
+ *     ❚❚ = 正在朗读（按确定可暂停）
+ *     ▶  = 已暂停（按确定可继续）
+ *
+ * 想彻底关掉朗读，回 TTS 面板按「暂停朗读」。
+ * ═══════════════════════════════════════════════════════════════
+ */
+@Composable
+private fun TtsStatusBadge(
+    playing: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .size(56.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.tertiary),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            // 用字符而不是图标库：这两个符号在电视距离下辨识度够，
+            // 而且省掉引入 material-icons-extended 的体积
+            text = if (playing) "❚❚" else "▶",
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onTertiary,
         )
     }
 }
