@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.myapplication.data.tts.TtsEngine
 import com.example.myapplication.data.tts.TtsLanguage
+import com.example.myapplication.fullScreenOverlay
 import com.example.myapplication.ui.components.TvButton
 import com.example.myapplication.ui.components.tvFocusable
 
@@ -86,7 +87,6 @@ fun TtsPanel(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xDD000000))
             .onKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown &&
                     (event.key == Key.Back || event.key == Key.Settings || event.key == Key.Menu)
@@ -99,6 +99,17 @@ fun TtsPanel(
             },
         contentAlignment = Alignment.Center,
     ) {
+        // 遮罩单独一层：扩展铺满窗口，但不影响面板的居中。
+        // （和书架菜单、阅读设置、目录面板是同样的结构 ——
+        //   TvSafeArea 的 padding 会把 fillMaxSize 的遮罩裁在安全区内，
+        //   外面那圈露出页面背景色，看起来就是"安全区颜色和显示区不符"。）
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .fullScreenOverlay()
+                .background(Color(0xDD000000))
+        )
+
         Column(
             modifier = Modifier
                 .width(760.dp)
