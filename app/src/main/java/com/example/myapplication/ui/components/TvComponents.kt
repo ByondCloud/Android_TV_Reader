@@ -91,21 +91,22 @@ fun Modifier.tvFocusable(
     val interactionSource = remember { MutableInteractionSource() }
 
     return this
-        // ══ 【Modifier 顺序在这里至关重要】══════════════════════════
-        // 原来的顺序是 scale 在最前面：
-        //     .scale(...)          <- 创建离屏图形层
-        //     .clip(shape)
-        //     .background(...)     <- 被画进图层内部
-        //     .border(...)         <- 被画进图层内部
+        // ══ 【为什么不用 Modifier.scale 做"聚焦放大"】══════════════════
+        // 试过用 scale(1.05f) 让聚焦元素放大一点，但在电视这种大尺寸
+        // 元素上副作用很明显：元素宽约 900px 时，1.05 倍会让左右各扩
+        // 约 22px，而文字是跟着一起放大的 ——
+        // 用户看到的就是"选中的那一项，文字位置和别的不一样，像被挤出去了"。
         //
-        // scale 的底层是 graphicsLayer，它会开一个离屏图层并把内容缓存起来。
-        // 在这台电视上实测的后果是：焦点变化时【缩放生效了、颜色却没更新】——
-        // 书本卡片获得焦点后，焦点框根本画不出来（顶部按钮因为结构不同没暴露这问题）。
+        // 去掉缩放之后，聚焦和未聚焦的排版完全一致，只有颜色和边框变化：
+        //   · 背景：surface -> surfaceVariant
+        //   · 边框：1dp 淡色 -> 3dp 主题色
+        // 这两种变化都不影响内容位置，视觉上已经足够醒目。
         //
-        // 把 scale 挪到最后，让 background / border 位于图层【外侧】，
-        // 它们的颜色变化就走上正常的重绘路径，不会再被图层缓存挡住；
-        // 而 scale 只负责把已经画好的内容整体放大，视觉结果不变。
-        // ═══════════════════════════════════════════════════════════
+        // 【注意】以前不敢去掉 scale，是因为这台电视（联发科 MT9655 +
+        // Mali）的图层缓存会让"去掉 scale 后焦点框完全不显示"。
+        // 那个问题现在已经在 MainActivity 里用软件渲染
+        // （setLayerType(LAYER_TYPE_SOFTWARE)）解决了，所以可以放心去掉。
+        // ═══════════════════════════════════════════════════════════════
         .clip(shape)
         .background(
             if (isFocused) {
@@ -123,14 +124,8 @@ fun Modifier.tvFocusable(
             },
             shape = shape,
         )
-        // ★ 缩放放在最后：它对上面已经绘制好的背景和边框整体生效
-        .scale(if (isFocused) focusedScale else 1f)
         .onFocusChanged { state ->
             isFocused = state.isFocused
-            android.util.Log.d(
-                "FOCUSDBG",
-                "tvFocusable: isFocused=${state.isFocused} hasFocus=${state.hasFocus}"
-            )
         }
         .clickable(
             enabled = enabled,
